@@ -2,79 +2,126 @@
 **Profile year:** 2021 Census · **Source:** Statistics Canada  
 _Note: Values reflect the selected community and available columns in your CSV._
 
+{% if pop.total_population != "N/A" %}
 ## 1) Population and dwellings
-In {{ community_name }}, the **2021 population** was {{ pop.total_population }}, {{ "up" if pop.population_change_pct_2016_2021|float(default=0) >= 0 else "down" }} {{ pop.population_change_pct_2016_2021 }}% from 2016 ({{ pop.population_2016 }}). There were **{{ pop.total_private_dwellings }}** private dwellings, of which **{{ pop.private_dwellings_occupied }}** were occupied by usual residents.
+In {{ community_name }}, the **2021 population** was {{ pop.total_population }}{% if pop.population_change_pct_2016_2021 != "N/A" %}, {{ "up" if pop.population_change_pct_2016_2021|float(default=0) >= 0 else "down" }} {{ pop.population_change_pct_2016_2021 }}% from 2016{% endif %}{% if pop.population_2016 != "N/A" %} ({{ pop.population_2016 }}){% endif %}. {% if pop.total_private_dwellings != "N/A" %}There were **{{ pop.total_private_dwellings }}** private dwellings{% if pop.private_dwellings_occupied != "N/A" %}, of which **{{ pop.private_dwellings_occupied }}** were occupied by usual residents{% endif %}.{% endif %}
+{% endif %}
 
+{% if age.median_age != "N/A" %}
 ## 2) Age characteristics
-Median age was **{{ age.median_age }}**. Children 0–14 years: **{{ age.age_0_14_pct }}%**; working-age 15–64: **{{ age.age_15_64_pct }}%**; seniors 65+: **{{ age.age_65_plus_pct }}%**.
+Median age: **{{ age.median_age }}**{% if age.age_0_14_pct != "N/A" %}; Children 0–14 years: **{{ age.age_0_14_pct }}%**{% endif %}{% if age.age_15_64_pct != "N/A" %}; Working-age 15–64: **{{ age.age_15_64_pct }}%**{% endif %}{% if age.age_65_plus_pct != "N/A" %}; Seniors 65+: **{{ age.age_65_plus_pct }}%**{% endif %}.
+{% endif %}
 
+{% if hh.avg_household_size != "N/A" %}
 ## 3) Household & dwelling characteristics
-Average household size: **{{ hh.avg_household_size }}**. Dwelling composition included single-detached (**{{ hh.single_detached_pct }}%**), apartments 5+ storeys (**{{ hh.apt_buildings_pct }}%**), and row houses (**{{ hh.row_house_pct }}%**).
+Average household size: **{{ hh.avg_household_size }}**{% if hh.single_detached_pct != "N/A" %}; Single-detached: **{{ hh.single_detached_pct }}%**{% endif %}{% if hh.apt_buildings_pct != "N/A" %}; Apartments (5+ storeys): **{{ hh.apt_buildings_pct }}%**{% endif %}{% if hh.row_house_pct != "N/A" %}; Row houses: **{{ hh.row_house_pct }}%**{% endif %}.
+{% endif %}
 
+{% if hht.one_person_households_pct != "N/A" %}
 ## 4) Household type
-One-person households: **{{ hht.one_person_households_pct }}%**; couple with children: **{{ hht.couple_with_children_pct }}%**; couple without children: **{{ hht.couple_without_children_pct }}%**; lone-parent: **{{ hht.lone_parent_households_pct }}%**.
+One-person households: **{{ hht.one_person_households_pct }}%**{% if hht.couple_with_children_pct != "N/A" %}; Couple with children: **{{ hht.couple_with_children_pct }}%**{% endif %}{% if hht.couple_without_children_pct != "N/A" %}; Couple without children: **{{ hht.couple_without_children_pct }}%**{% endif %}{% if hht.lone_parent_households_pct != "N/A" %}; Lone-parent: **{{ hht.lone_parent_households_pct }}%**{% endif %}.
+{% endif %}
 
+{% if inc.median_total_income_2020 != "N/A" %}
 ## 5) Household income (2020)
-Median household income (2020): **${{ inc.median_total_income_2020 }}**; average: **${{ inc.avg_total_income_2020 }}** ({{ inc.households_total }} households).
+Median: **${{ inc.median_total_income_2020 }}**{% if inc.avg_total_income_2020 != "N/A" %}; Average: **${{ inc.avg_total_income_2020 }}**{% endif %}{% if inc.households_total != "N/A" %} ({{ inc.households_total }} households){% endif %}.
+{% endif %}
 
+{% if lii.after_tax_low_income_measure_pct != "N/A" or lii.gini_coefficient != "N/A" %}
 ## 6) Low income & inequality (2020)
-LIM-AT rate: **{{ lii.after_tax_low_income_measure_pct }}%**; income inequality (Gini): **{{ lii.gini_coefficient }}**.
+{% if lii.after_tax_low_income_measure_pct != "N/A" %}LIM-AT rate: **{{ lii.after_tax_low_income_measure_pct }}%**{% endif %}{% if lii.gini_coefficient != "N/A" %}; Gini index: **{{ lii.gini_coefficient }}**{% endif %}.
+{% endif %}
 
+{% if lang.english_only_pct != "N/A" %}
 ## 7) Knowledge of official languages
-English only: **{{ lang.english_only_pct }}%**; French only: **{{ lang.french_only_pct }}%**; both: **{{ lang.both_official_pct }}%**; neither: **{{ lang.neither_official_pct }}%**.
+English only: **{{ lang.english_only_pct }}%**{% if lang.french_only_pct != "N/A" %}; French only: **{{ lang.french_only_pct }}%**{% endif %}{% if lang.both_official_pct != "N/A" %}; Both: **{{ lang.both_official_pct }}%**{% endif %}{% if lang.neither_official_pct != "N/A" %}; Neither: **{{ lang.neither_official_pct }}%**{% endif %}.
+{% endif %}
 
+{% if fols.english_pct != "N/A" %}
 ## 8) First official language spoken
-English: **{{ fols.english_pct }}%**; French: **{{ fols.french_pct }}%**; both: **{{ fols.english_and_french_pct }}%**.
+English: **{{ fols.english_pct }}%**{% if fols.french_pct != "N/A" %}; French: **{{ fols.french_pct }}%**{% endif %}{% if fols.english_and_french_pct != "N/A" %}; Both: **{{ fols.english_and_french_pct }}%**{% endif %}.
+{% endif %}
 
+{% if mt.english_pct != "N/A" %}
 ## 9) Mother tongue
-English: **{{ mt.english_pct }}%**; French: **{{ mt.french_pct }}%**; non-official: **{{ mt.non_official_pct }}%**.
+English: **{{ mt.english_pct }}%**{% if mt.french_pct != "N/A" %}; French: **{{ mt.french_pct }}%**{% endif %}{% if mt.non_official_pct != "N/A" %}; Non-official: **{{ mt.non_official_pct }}%**{% endif %}.
+{% endif %}
 
+{% if hl.english_pct != "N/A" %}
 ## 10) Language spoken most often at home
-English: **{{ hl.english_pct }}%**; French: **{{ hl.french_pct }}%**; non-official: **{{ hl.non_official_pct }}%**.
+English: **{{ hl.english_pct }}%**{% if hl.french_pct != "N/A" %}; French: **{{ hl.french_pct }}%**{% endif %}{% if hl.non_official_pct != "N/A" %}; Non-official: **{{ hl.non_official_pct }}%**{% endif %}.
+{% endif %}
 
+{% if imm.immigrants_pct != "N/A" %}
 ## 11) Immigrant status & period of immigration
-Immigrants: **{{ imm.immigrants_pct }}%**; recent (2016–2021): **{{ imm.recent_immigrants_2016_2021_pct }}%**; non-permanent residents: **{{ imm.non_permanent_residents_pct }}%**.
+Immigrants: **{{ imm.immigrants_pct }}%**{% if imm.recent_immigrants_2016_2021_pct != "N/A" %}; Recent (2016–2021): **{{ imm.recent_immigrants_2016_2021_pct }}%**{% endif %}{% if imm.non_permanent_residents_pct != "N/A" %}; Non-permanent residents: **{{ imm.non_permanent_residents_pct }}%**{% endif %}.
+{% endif %}
 
+{% if pbi.top_birth_region_1 != "N/A" %}
 ## 12) Places of birth (immigrants)
-Top birth regions among immigrants include **{{ pbi.top_birth_region_1 }}**, **{{ pbi.top_birth_region_2 }}**, and **{{ pbi.top_birth_region_3 }}**.
+Top regions: **{{ pbi.top_birth_region_1 }}**, **{{ pbi.top_birth_region_2 }}**, **{{ pbi.top_birth_region_3 }}**.
+{% endif %}
 
+{% if pr.top_recent_birth_region_1 != "N/A" %}
 ## 13) Places of birth (recent immigrants)
-For recent immigrants, top regions include **{{ pr.top_recent_birth_region_1 }}**, **{{ pr.top_recent_birth_region_2 }}**, and **{{ pr.top_recent_birth_region_3 }}**.
+Top regions: **{{ pr.top_recent_birth_region_1 }}**, **{{ pr.top_recent_birth_region_2 }}**, **{{ pr.top_recent_birth_region_3 }}**.
+{% endif %}
 
+{% if ip.indigenous_identity_pct != "N/A" %}
 ## 14) Indigenous population
-Indigenous identity: **{{ ip.indigenous_identity_pct }}%** (First Nations **{{ ip.first_nations_pct }}%**, Métis **{{ ip.metis_pct }}%**, Inuk (Inuit) **{{ ip.inuk_inuit_pct }}%**).
+Indigenous identity: **{{ ip.indigenous_identity_pct }}%**{% if ip.first_nations_pct != "N/A" %}; First Nations: **{{ ip.first_nations_pct }}%**{% endif %}{% if ip.metis_pct != "N/A" %}; Métis: **{{ ip.metis_pct }}%**{% endif %}{% if ip.inuk_inuit_pct != "N/A" %}; Inuit: **{{ ip.inuk_inuit_pct }}%**{% endif %}.
+{% endif %}
 
+{% if ia.indigenous_ancestry_pct != "N/A" %}
 ## 15) Indigenous ancestry
 Population reporting Indigenous ancestry: **{{ ia.indigenous_ancestry_pct }}%**.
+{% endif %}
 
+{% if vm.visible_minority_pct != "N/A" %}
 ## 16) Visible minority
-Visible minority share: **{{ vm.visible_minority_pct }}%**; leading groups: **{{ vm.top_group_1 }}**, **{{ vm.top_group_2 }}**.
+Visible minority: **{{ vm.visible_minority_pct }}%**{% if vm.top_group_1 != "N/A" %}; Leading groups: **{{ vm.top_group_1 }}**, **{{ vm.top_group_2 }}**{% endif %}.
+{% endif %}
 
+{% if ss.sec_school_or_equiv_pct != "N/A" %}
 ## 17) Secondary school completion
-Secondary (high) school or equivalent: **{{ ss.sec_school_or_equiv_pct }}%**; no certificate/diploma/degree: **{{ ss.less_than_sec_pct }}%**.
+Secondary or equivalent: **{{ ss.sec_school_or_equiv_pct }}%**{% if ss.less_than_sec_pct != "N/A" %}; No certificate/diploma: **{{ ss.less_than_sec_pct }}%**{% endif %}.
+{% endif %}
 
+{% if hc.no_certificate_pct != "N/A" %}
 ## 18) Highest certificate, diploma or degree
-No certificate/diploma/degree: **{{ hc.no_certificate_pct }}%**; postsecondary: **{{ hc.postsecondary_pct }}%**; bachelor’s: **{{ hc.bachelor_pct }}%**; graduate: **{{ hc.graduate_pct }}%**.
+No certificate: **{{ hc.no_certificate_pct }}%**{% if hc.postsecondary_pct != "N/A" %}; Postsecondary: **{{ hc.postsecondary_pct }}%**{% endif %}{% if hc.bachelor_pct != "N/A" %}; Bachelor’s: **{{ hc.bachelor_pct }}%**{% endif %}{% if hc.graduate_pct != "N/A" %}; Graduate: **{{ hc.graduate_pct }}%**{% endif %}.
+{% endif %}
 
+{% if m1.non_movers_pct != "N/A" %}
 ## 19) Mobility (1 year)
-Non-movers: **{{ m1.non_movers_pct }}%**; movers within community: **{{ m1.movers_within_comm_pct }}%**; from other communities: **{{ m1.movers_from_other_comm_pct }}%**.
+Non-movers: **{{ m1.non_movers_pct }}%**{% if m1.movers_within_comm_pct != "N/A" %}; Movers within community: **{{ m1.movers_within_comm_pct }}%**{% endif %}{% if m1.movers_from_other_comm_pct != "N/A" %}; From other communities: **{{ m1.movers_from_other_comm_pct }}%**{% endif %}.
+{% endif %}
 
+{% if m5.non_movers_pct != "N/A" %}
 ## 20) Mobility (5 years)
-Non-movers: **{{ m5.non_movers_pct }}%**; movers within community: **{{ m5.movers_within_comm_pct }}%**; from other communities: **{{ m5.movers_from_other_comm_pct }}%**.
+Non-movers: **{{ m5.non_movers_pct }}%**{% if m5.movers_within_comm_pct != "N/A" %}; Movers within community: **{{ m5.movers_within_comm_pct }}%**{% endif %}{% if m5.movers_from_other_comm_pct != "N/A" %}; From other communities: **{{ m5.movers_from_other_comm_pct }}%**{% endif %}.
+{% endif %}
 
+{% if commute.car_driver_pct != "N/A" %}
 ## 21) Main mode of commuting
-Driver: **{{ commute.car_driver_pct }}%**; public transit: **{{ commute.public_transit_pct }}%**; walk/bicycle: **{{ commute.walk_bicycle_pct }}%**; worked at home: **{{ commute.worked_from_home_pct }}%**.
+Driver: **{{ commute.car_driver_pct }}%**{% if commute.public_transit_pct != "N/A" %}; Public transit: **{{ commute.public_transit_pct }}%**{% endif %}{% if commute.walk_bicycle_pct != "N/A" %}; Walk/bicycle: **{{ commute.walk_bicycle_pct }}%**{% endif %}{% if commute.worked_from_home_pct != "N/A" %}; Worked at home: **{{ commute.worked_from_home_pct }}%**{% endif %}.
+{% endif %}
 
+{% if cd.under_15_min_pct != "N/A" %}
 ## 22) Commuting duration
-<15 min: **{{ cd.under_15_min_pct }}%**; 15–29: **{{ cd.fifteen_to_29_min_pct }}%**; 30–44: **{{ cd.thirty_to_44_min_pct }}%**; 45–59: **{{ cd.fortyfive_to_59_min_pct }}%**; 60+: **{{ cd.sixty_plus_min_pct }}%**.
+<15 min: **{{ cd.under_15_min_pct }}%**{% if cd.fifteen_to_29_min_pct != "N/A" %}; 15–29: **{{ cd.fifteen_to_29_min_pct }}%**{% endif %}{% if cd.thirty_to_44_min_pct != "N/A" %}; 30–44: **{{ cd.thirty_to_44_min_pct }}%**{% endif %}{% if cd.fortyfive_to_59_min_pct != "N/A" %}; 45–59: **{{ cd.fortyfive_to_59_min_pct }}%**{% endif %}{% if cd.sixty_plus_min_pct != "N/A" %}; 60+: **{{ cd.sixty_plus_min_pct }}%**{% endif %}.
+{% endif %}
 
+{% if mol.children_eligible_count != "N/A" %}
 ## 23) Children eligible for minority official language instruction
 Children eligible: **{{ mol.children_eligible_count }}**.
+{% endif %}
 
+{% if emol.eligible_school_aged_count != "N/A" %}
 ## 24) School-aged children: eligibility & instruction in the minority official language
-Eligible school-aged children: **{{ emol.eligible_school_aged_count }}**; attending instruction: **{{ emol.attending_minority_school_count }}**.
+Eligible school-aged children: **{{ emol.eligible_school_aged_count }}**{% if emol.attending_minority_school_count != "N/A" %}; Attending instruction: **{{ emol.attending_minority_school_count }}**{% endif %}.
+{% endif %}
 
 ---
 
 _Interpretation note:_ Figures may not sum due to rounding. Some fields may be “N/A” if not present in your CSV or mapping. Adjust `metadata/fields.yaml` to ensure alignment with your dataset.
-``
