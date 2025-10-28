@@ -1,3 +1,23 @@
+def _safe_get(row, col_name, default="N/A"):
+    if not isinstance(col_name, str) or col_name.strip() == "":
+        return default
+    if col_name in row.index:
+        val = row[col_name]
+    else:
+        hits = [c for c in row.index if c.lower() == col_name.lower()]
+        val = row[hits[0]] if hits else default
+    if pd.isna(val):
+        return default
+    # Convert to numeric if possible
+    try:
+        num = float(str(val).replace(",", "").strip())
+        if num == 0:
+            return "N/A"
+    except ValueError:
+        pass
+    return val
+``
+
 from __future__ import annotations
 import io
 import re
