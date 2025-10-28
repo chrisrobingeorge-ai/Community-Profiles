@@ -1,0 +1,154 @@
+# Adjust these mappings to match the column headers in your Statistics Canada CSV(s).
+# The app uses these keys to fetch values and build the narrative.
+
+identity:
+  geoid_col: "GeoUID"            # e.g., "GeoUID"
+  name_col: "Geographic name"    # e.g., "Geographic name"
+
+# ---- 1. Population and dwellings ----
+population_and_dwellings:
+  total_population: "Population, 2021"                # Often: "Population, 2021"
+  population_2016: "Population, 2016"                 # Often: "Population, 2016"
+  population_change_pct_2016_2021: "Population percentage change, 2016 to 2021"
+  total_private_dwellings: "Total private dwellings"
+  private_dwellings_occupied: "Private dwellings occupied by usual residents"
+
+# ---- 2. Age characteristics ----
+age_characteristics:
+  median_age: "Median age"
+  age_0_14_pct: "0 to 14 years (% of population)"
+  age_15_64_pct: "15 to 64 years (% of population)"
+  age_65_plus_pct: "65 years and over (% of population)"
+
+# ---- 3. Household and dwelling characteristics ----
+household_and_dwelling_characteristics:
+  avg_household_size: "Average household size"
+  single_detached_pct: "Single-detached house (% of occupied dwellings)"
+  apt_buildings_pct: "Apartment in building that has five or more storeys (% of occupied dwellings)"
+  row_house_pct: "Row house (% of occupied dwellings)"
+
+# ---- 4. Household type ----
+household_type:
+  one_person_households_pct: "One-person private households (% of total households)"
+  couple_with_children_pct: "Couple-family households with children (% of total households)"
+  couple_without_children_pct: "Couple-family households without children (% of total households)"
+  lone_parent_households_pct: "Lone-parent households (% of total households)"
+
+# ---- 5. Income of households in 2020 ----
+income_of_households_2020:
+  median_total_income_2020: "Median total income of households in 2020 ($)"
+  avg_total_income_2020: "Average total income of households in 2020 ($)"
+  households_total: "Total - Households, 2020"
+
+# ---- 6. Low income and income inequality in 2020 ----
+low_income_inequality_2020:
+  after_tax_low_income_measure_pct: "Percentage of persons in low income based on LIM-AT, 2020"
+  gini_coefficient: "Gini index, after-tax income, 2020"
+
+# ---- 7. Knowledge of official languages ----
+knowledge_of_official_languages:
+  english_only_pct: "English only (% of population)"
+  french_only_pct: "French only (% of population)"
+  both_official_pct: "English and French (% of population)"
+  neither_official_pct: "Neither English nor French (% of population)"
+
+# ---- 8. First official language spoken ----
+first_official_language_spoken:
+  english_pct: "English (% of population)"
+  french_pct: "French (% of population)"
+  english_and_french_pct: "English and French (% of population)"
+
+# ---- 9. Mother tongue ----
+mother_tongue:
+  english_pct: "English (% of population) [Mother tongue]"
+  french_pct: "French (% of population) [Mother tongue]"
+  non_official_pct: "Non-official languages (% of population) [Mother tongue]"
+
+# ---- 10. Language spoken most often at home ----
+language_most_often_at_home:
+  english_pct: "English (% of population) [Home language]"
+  french_pct: "French (% of population) [Home language]"
+  non_official_pct: "Non-official languages (% of population) [Home language]"
+
+# ---- 11. Immigrant status and period of immigration ----
+immigrant_status_and_period:
+  immigrants_pct: "Immigrants (% of population)"
+  non_permanent_residents_pct: "Non-permanent residents (% of population)"
+  recent_immigrants_2016_2021_pct: "Recent immigrants, 2016 to 2021 (% of population)"
+
+# ---- 12. Selected places of birth for the immigrant population ----
+places_of_birth_immigrants:
+  top_birth_region_1: "Immigrants - Top place of birth region 1 (% of immigrants)"
+  top_birth_region_2: "Immigrants - Top place of birth region 2 (% of immigrants)"
+  top_birth_region_3: "Immigrants - Top place of birth region 3 (% of immigrants)"
+
+# ---- 13. Selected places of birth for the recent immigrant population ----
+places_of_birth_recent_immigrants:
+  top_recent_birth_region_1: "Recent immigrants - Top place of birth region 1 (% of recent immigrants)"
+  top_recent_birth_region_2: "Recent immigrants - Top place of birth region 2 (% of recent immigrants)"
+  top_recent_birth_region_3: "Recent immigrants - Top place of birth region 3 (% of recent immigrants)"
+
+# ---- 14. Indigenous population ----
+indigenous_population:
+  indigenous_identity_pct: "Indigenous identity (% of population)"
+  first_nations_pct: "First Nations (% of population)"
+  metis_pct: "Métis (% of population)"
+  inuk_inuit_pct: "Inuk (Inuit) (% of population)"
+
+# ---- 15. Indigenous ancestry ----
+indigenous_ancestry:
+  indigenous_ancestry_pct: "Indigenous ancestry (% of population)"
+
+# ---- 16. Visible minority ----
+visible_minority:
+  visible_minority_pct: "Visible minority (% of population)"
+  top_group_1: "Top visible minority group 1 (% of population)"
+  top_group_2: "Top visible minority group 2 (% of population)"
+
+# ---- 17. Secondary school diploma or equivalency ----
+secondary_school_completion:
+  sec_school_or_equiv_pct: "Secondary (high) school diploma or equivalency certificate (% of population 15+)"
+  less_than_sec_pct: "No certificate, diploma or degree (% of population 15+)"
+
+# ---- 18. Highest certificate, diploma or degree ----
+highest_credential:
+  no_certificate_pct: "No certificate, diploma or degree (% of population 15+)"
+  postsecondary_pct: "Postsecondary certificate, diploma or degree (% of population 15+)"
+  bachelor_pct: "Bachelor's degree (% of population 15+)"
+  graduate_pct: "University certificate, diploma or degree above bachelor level (% of population 15+)"
+
+# ---- 19. Mobility status 1 year ago ----
+mobility_status_1_year:
+  non_movers_pct: "Non-movers (%), 1 year"
+  movers_within_comm_pct: "Movers within same community (%), 1 year"
+  movers_from_other_comm_pct: "Movers from different community (%), 1 year"
+
+# ---- 20. Mobility status 5 years ago ----
+mobility_status_5_years:
+  non_movers_pct: "Non-movers (%), 5 years"
+  movers_within_comm_pct: "Movers within same community (%), 5 years"
+  movers_from_other_comm_pct: "Movers from different community (%), 5 years"
+
+# ---- 21. Main mode of commuting ----
+main_mode_of_commuting:
+  car_driver_pct: "Car, truck or van — as a driver (% of employed labour force)"
+  public_transit_pct: "Public transit (% of employed labour force)"
+  walk_bicycle_pct: "Walked or bicycled (% of employed labour force)"
+  worked_from_home_pct: "Worked at home (% of employed labour force)"
+
+# ---- 22. Commuting duration ----
+commuting_duration:
+  under_15_min_pct: "Less than 15 minutes (% of employed labour force with a usual place of work)"
+  fifteen_to_29_min_pct: "15 to 29 minutes (%)"
+  thirty_to_44_min_pct: "30 to 44 minutes (%)"
+  fortyfive_to_59_min_pct: "45 to 59 minutes (%)"
+  sixty_plus_min_pct: "60 minutes and over (%)"
+
+# ---- 23. Children eligible for instruction in the minority official language ----
+children_eligible_minority_official_language:
+  children_eligible_count: "Children eligible for instruction in the minority official language (count)"
+
+# ---- 24. Eligibility and instruction in the minority official language for school-aged children ----
+eligibility_instruction_minority_official_language:
+  eligible_school_aged_count: "Eligible school-aged children (count)"
+  attending_minority_school_count: "Attending instruction in the minority official language (count)"
