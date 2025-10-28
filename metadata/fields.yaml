@@ -1,6 +1,3 @@
-# Adjust these mappings to match the column headers in your Statistics Canada CSV(s).
-# The app uses these keys to fetch values and build the narrative.
-
 identity:
   geoid_col: "GeoUID"            # e.g., "GeoUID"
   name_col: "Geographic name"    # e.g., "Geographic name"
