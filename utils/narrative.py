@@ -1,29 +1,9 @@
-def _safe_get(row, col_name, default="N/A"):
-    if not isinstance(col_name, str) or col_name.strip() == "":
-        return default
-    if col_name in row.index:
-        val = row[col_name]
-    else:
-        hits = [c for c in row.index if c.lower() == col_name.lower()]
-        val = row[hits[0]] if hits else default
-    if pd.isna(val):
-        return default
-    # Convert to numeric if possible
-    try:
-        num = float(str(val).replace(",", "").strip())
-        if num == 0:
-            return "N/A"
-    except ValueError:
-        pass
-    return val
-``
-
 from __future__ import annotations
+
 import io
 import re
 from pathlib import Path
 from typing import Dict
-
 import pandas as pd
 from docx import Document
 from docx.shared import Pt
@@ -31,13 +11,17 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 def _safe_get(row: pd.Series, col_name: str, default="N/A"):
+    """
+    Safely fetch a value from a row by column name (case-insensitive).
+    Returns 'N/A' when missing or NaN.
+    """
     if not isinstance(col_name, str) or col_name.strip() == "":
         return default
-    # row keys are normalized by pandas exactly as in df; we will try case-insensitively
+    # exact match
     if col_name in row.index:
         val = row[col_name]
     else:
-        # try case-insensitive fallback
+        # case-insensitive fallback
         hits = [c for c in row.index if c.lower() == col_name.lower()]
         val = row[hits[0]] if hits else default
     if pd.isna(val):
@@ -46,6 +30,10 @@ def _safe_get(row: pd.Series, col_name: str, default="N/A"):
 
 
 def _fmt_number(x):
+    """
+    Format numbers with thousand separators and 1 decimal if needed.
+    Leave non-numeric values unchanged.
+    """
     try:
         if x == "N/A":
             return x
@@ -61,6 +49,9 @@ def _fmt_number(x):
 
 
 def _fmt_percent(x):
+    """
+    Format a numeric (possibly with %) as a percent with 1 decimal.
+    """
     try:
         if x == "N/A":
             return x
@@ -78,16 +69,14 @@ def compose_context(row: pd.Series, mapping: Dict) -> Dict:
     geoid_col = ident.get("geoid_col", "GeoUID")
     name_col = ident.get("name_col", "Geographic name")
 
-    # resolve exact index labels if normalized
+    # Resolve actual column name in the row's index (case-insensitive)
     def r(col):
-        # try exact
         if col in row.index:
             return col
-        # case-insensitive
         for c in row.index:
             if c.lower() == col.lower():
                 return c
-        return col  # may not exist; _safe_get handles default
+        return col  # may not exist; _safe_get will handle "N/A"
 
     context = {
         "geoid": str(_safe_get(row, r(geoid_col), "N/A")),
@@ -99,14 +88,13 @@ def compose_context(row: pd.Series, mapping: Dict) -> Dict:
         out = {}
         for k, col in key_map.items():
             val = _safe_get(row, r(col), "N/A")
-            # simple heuristics: $ or % or counts -> format
             sval = str(val)
+            # heuristics: fields named with pct/percentage or values ending with %
             if "%" in k or sval.endswith("%") or "pct" in k or "percentage" in k:
                 out[k] = _fmt_percent(val)
-            elif "median" in k or "avg" in k or "mean" in k or "count" in k or "total" in k or "number" in k:
+            elif any(token in k for token in ["median", "avg", "mean", "count", "total", "number"]):
                 out[k] = _fmt_number(val)
             else:
-                # still try number format if numeric
                 out[k] = _fmt_number(val)
         return out
 
@@ -149,7 +137,7 @@ def render_markdown(context: Dict, lang: str = "en") -> str:
     template_file = "narrative_en.md.j2"
     env = Environment(
         loader=FileSystemLoader(str(Path("templates"))),
-        autoescape=select_autoescape(enabled_extensions=("md", "j2",)),
+        autoescape=select_autoescape(enabled_extensions=("md", "j2")),
         trim_blocks=True,
         lstrip_blocks=True,
     )
@@ -160,9 +148,10 @@ def render_markdown(context: Dict, lang: str = "en") -> str:
 def markdown_to_docx(md_text: str) -> bytes:
     """
     Very lightweight Markdown -> DOCX converter good enough for headings and paragraphs.
-    - '#', '##' become headings
-    - '**bold**' and '*italic*' are converted in a basic way
-    - bullet points starting with '-' become bullet paragraphs
+    - '#', '##', '###' become headings
+    - '**bold**' and '*italic*' markers are removed (no rich inline styling)
+    - lines starting with '- ' become bullet paragraphs
+    - '---' inserts a page break
     """
     doc = Document()
     style = doc.styles["Normal"]
@@ -170,7 +159,6 @@ def markdown_to_docx(md_text: str) -> bytes:
     style.font.size = Pt(11)
 
     lines = md_text.splitlines()
-    bullet_mode = False
 
     for line in lines:
         stripped = line.strip("\n")
@@ -194,11 +182,10 @@ def markdown_to_docx(md_text: str) -> bytes:
 
         # inline bold/italic (very basic)
         text = stripped
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # drop markers; python-docx has limited inline md
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"\*(.+?)\*", r"\1", text)
         doc.add_paragraph(text)
 
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
-``
