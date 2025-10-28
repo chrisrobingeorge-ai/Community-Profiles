@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import glob
-import io
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -46,13 +45,13 @@ def load_data(raw_dir: Path) -> pd.DataFrame:
     all_cols: set = set()
     for p in csvs:
         df = _read_csv_any(p)
-        # Strip BOM/emojis/whitespace in headers
+        # Strip BOM/whitespace in headers and normalize for matching
         df.columns = [normalize_col(c) for c in df.columns]
         frames.append(df)
         all_cols.update(df.columns)
 
     # Align columns across files
-    aligned_frames = []
+    aligned_frames: List[pd.DataFrame] = []
     all_cols_list = list(all_cols)
     for df in frames:
         for c in all_cols_list:
@@ -104,12 +103,13 @@ def list_communities(df: pd.DataFrame, geoid_col: str, name_col: str) -> List[st
     """
     Return a sorted unique list of community names.
     """
-    # Attempt to resolve actual columns
     geoid_key = resolve_column(df, [geoid_col, "geouid"])
     name_key = resolve_column(df, [name_col, "geographic name", "geo name", "name"])
-    if name_key is None:
+    if name_key is None and geoid_key in df.columns:
         # Fall back to GeoUID as a string
         return sorted(df[geoid_key].astype(str).fillna("Unknown").unique().tolist())
+    if name_key is None:
+        return []
     names = df[name_key].astype(str).fillna("Unknown")
     return sorted(names.unique().tolist())
 
@@ -124,8 +124,8 @@ def get_record(
     """
     Return the first matching row by GeoUID or by community name (case-insensitive).
     """
-    geoid_key = resolve_column(df, [geoid_col, "geouid"])
-    name_key = resolve_column(df, [name_col, "geographic name", "geo name", "name"])
+    geoid_key = resolve_column(df, [geoid_col, "geouid"]) or geoid_col
+    name_key = resolve_column(df, [name_col, "geographic name", "geo name", "name"]) or name_col
 
     if geoid and geoid_key in df.columns:
         mask = df[geoid_key].astype(str).str.strip() == str(geoid).strip()
@@ -137,6 +137,8 @@ def get_record(
         if mask.any():
             return df.loc[mask].iloc[0]
     return None
+
+
 def _mapping_to_required_columns(mapping: Dict) -> Dict[str, List[str]]:
     """
     Flatten mapping to a dict of section -> list of column names (as given).
@@ -165,10 +167,16 @@ def gather_column_status(df: pd.DataFrame, mapping: Dict) -> Tuple[pd.DataFrame,
         present = sum(1 for c in norm_cols if c in df_norm_cols)
         total = len(norm_cols) if norm_cols else 0
         pct = (present / total * 100) if total else 0
-        rows.append({"section": section, "present": present, "required": total, "coverage_pct": round(pct)})
+        rows.append(
+            {
+                "section": section,
+                "present": present,
+                "required": total,
+                "coverage_pct": round(pct),
+            }
+        )
         present_total += present
         required_total += total
     overall = (present_total / required_total * 100) if required_total else 0
     status_df = pd.DataFrame(rows).sort_values("section").reset_index(drop=True)
     return status_df, round(overall, 1)
-``
