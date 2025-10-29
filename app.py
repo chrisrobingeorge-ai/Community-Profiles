@@ -486,7 +486,119 @@ def extract_indigenous_nations(df, geo_col):
 
     return ordered_unique
 
-def generate_summary(df: pd.DataFrame) -> str:
+from datetime import date, datetime
+from collections import OrderedDict
+
+CENSUS_REFERENCE_DATE = date(2021, 5, 11)  # 2021 Census Day
+
+AGE_BANDS_ORDER = [
+    "0 to 4 years",
+    "5 to 9 years",
+    "10 to 14 years",
+    "15 to 19 years",
+    "20 to 24 years",
+    "25 to 29 years",
+    "30 to 34 years",
+    "35 to 39 years",
+    "40 to 44 years",
+    "45 to 49 years",
+    "50 to 54 years",
+    "55 to 59 years",
+    "60 to 64 years",
+    "65 to 69 years",
+    "70 to 74 years",
+    "75 to 79 years",
+    "80 to 84 years",
+    "85 years and over",
+]
+
+def _find_age_value(df, geo_col, band_label):
+    row = df[
+        (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
+        (df["Characteristic"].str.fullmatch(rf"\s*{band_label}\s*", case=False, na=False))
+    ]
+    if row.empty:
+        # try contains (some extracts have indenting/spaces)
+        row = df[
+            (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
+            (df["Characteristic"].str.contains(rf"{band_label}", case=False, na=False))
+        ]
+    if row.empty:
+        return 0.0
+    return _coerce_number(row.iloc[0][geo_col]) or 0.0
+
+def extract_age_bands(df, geo_col) -> OrderedDict:
+    """
+    Returns an ordered dict of {band_label: count} for standard 5-year bands and 85+.
+    Missing bands default to 0.
+    """
+    bands = OrderedDict()
+    for lab in AGE_BANDS_ORDER:
+        bands[lab] = float(_find_age_value(df, geo_col, lab))
+    return bands
+
+def _shift_once_one_year(bands: OrderedDict) -> OrderedDict:
+    """
+    Shift 1 year forward: move 1/5 of each 5-year band up into the next band.
+    Top band (85+) only receives; 0–4 loses but we don't add births.
+    """
+    out = OrderedDict((k, 0.0) for k in bands.keys())
+    keys = list(bands.keys())
+    for i, k in enumerate(keys):
+        v = bands[k]
+        if k == "85 years and over":
+            # receives inflow from previous band; keeps its current residents
+            out[k] += v  # current
+            # inflow added below from previous band
+        else:
+            stay = v * 4.0/5.0
+            move = v * 1.0/5.0
+            out[k] += stay
+            # push to next band
+            nxt = keys[i+1]
+            out[nxt] += move
+    return out
+
+def age_bands_adjust_to_date(bands: OrderedDict, as_of: date) -> OrderedDict:
+    """
+    Age the 2021 bands forward to 'as_of' date with 1/5 per year movement.
+    Works for fractional years too.
+    """
+    # years since census day
+    delta_years = max(0.0, (as_of - CENSUS_REFERENCE_DATE).days / 365.25)
+    if delta_years == 0:
+        return bands
+
+    # integer years
+    y = int(delta_years)
+    frac = delta_years - y
+
+    cur = bands.copy()
+    for _ in range(y):
+        cur = _shift_once_one_year(cur)
+
+    if frac > 0:
+        # apply fractional shift: move (frac/5) of each non-top band up
+        out = OrderedDict((k, 0.0) for k in cur.keys())
+        keys = list(cur.keys())
+        for i, k in enumerate(keys):
+            v = cur[k]
+            if k == "85 years and over":
+                out[k] += v
+            else:
+                stay = v * (1.0 - frac/5.0)
+                move = v * (frac/5.0)
+                out[k] += stay
+                nxt = keys[i+1]
+                out[nxt] += move
+        cur = out
+
+    return cur
+
+def sum_bands(bands: OrderedDict, wanted_labels: list[str]) -> float:
+    return float(sum(bands.get(l, 0.0) for l in wanted_labels))
+
+def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
     if df.empty:
         return "No summary available."
 
@@ -512,28 +624,38 @@ def generate_summary(df: pd.DataFrame) -> str:
             )
 
     # -------------------------------------------------
-    # 2. Age structure (kids, seniors)
+    # 2. Age structure (kids, seniors) with optional aging to 'as_of_date'
     # -------------------------------------------------
-    kids_val = _best_numeric_from(
-        df,
-        topic_regex="Age characteristics",
-        char_regex=r"\b0\s*to\s*14\s*years\b",
-        geo_col=geo_col,
-    )
-    seniors_val = _best_numeric_from(
-        df,
-        topic_regex="Age characteristics",
-        char_regex=r"65\s*years",
-        geo_col=geo_col,
-    )
+    kids_bands = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
+    seniors_bands = ["65 to 69 years", "70 to 74 years", "75 to 79 years", "80 to 84 years", "85 years and over"]
+
+    kids_val = None
+    seniors_val = None
+
+    if as_of_date is not None:
+        # Use cohort-aging to adjust age bands to the chosen date
+        geo_col = pick_geo_col(df)
+        age_bands = extract_age_bands(df, geo_col)
+        adj = age_bands_adjust_to_date(age_bands, as_of=as_of_date)
+        kids_val = sum_bands(adj, kids_bands)
+        seniors_val = sum_bands(adj, seniors_bands)
+    else:
+        # Use 2021 raw values
+        kids_val = _best_numeric_from(
+            df, topic_regex="Age characteristics", char_regex=r"\b0\s*to\s*14\s*years\b", geo_col=geo_col
+        )
+        seniors_val = _best_numeric_from(
+            df, topic_regex="Age characteristics", char_regex=r"65\s*years", geo_col=geo_col
+        )
 
     kids_pct = None
     seniors_pct = None
     if pop_val_num and pop_val_num > 0:
-        if kids_val and kids_val > 0 and kids_val < pop_val_num:
+        if kids_val and 0 < kids_val < pop_val_num:
             kids_pct = (kids_val / pop_val_num) * 100.0
-        if seniors_val and seniors_val > 0 and seniors_val < pop_val_num:
+        if seniors_val and 0 < seniors_val < pop_val_num:
             seniors_pct = (seniors_val / pop_val_num) * 100.0
+
 
     age_bits = []
     if kids_pct and kids_pct >= 1.0:
