@@ -269,27 +269,52 @@ def _best_numeric_from(df, topic_regex=None, char_regex=None, geo_col=None, min_
 
 def extract_significant_languages(df, geo_col, pop_val_num):
     """
-    Look at home languages from relevant topics and pull out
-    specific non-English/non-French languages that appear
-    in meaningful numbers.
+    Return a list of concrete languages spoken at home in meaningful numbers,
+    excluding English/French and excluding generic/statistical buckets.
 
-    We'll scan characteristics like "German", "Tagalog (Filipino)",
-    "Punjabi (Panjabi)", "Cree languages", etc.
-
-    We'll ignore junk rows like "English", "French", "Both English and French",
-    "Other languages", "Multiple responses".
-
-    Heuristic for 'meaningful':
-    - If we know total pop: language count/pop >= 1%
-    - Else: raw count >= 50 (tunable)
+    We'll scan "Mother tongue", "Language spoken most often at home",
+    "Other language spoken regularly at home".
     """
-
-    if pop_val_num is None or pop_val_num <= 0:
-        pop_val_num = None  # we'll fall back to raw-count threshold
 
     LANGUAGE_TOPIC_REGEX = (
         "Mother tongue|Language spoken most often at home|Other language spoken regularly at home"
     )
+
+    # terms we do NOT want to output in the summary because they're buckets/families/stat headers:
+    block_terms = [
+        "total",
+        "official",
+        "non-official",
+        "non official",
+        "single responses",
+        "multiple responses",
+        "indo-european",
+        "germanic",
+        "balto-slavic",
+        "slavic",
+        "germanic languages",
+        "germanic language",
+        "language family",
+        "not included elsewhere",
+        "other languages",
+        "languages not included elsewhere",
+        "aboriginal languages",
+        "indigenous languages",  # we'll handle Indigenous through nations instead
+    ]
+
+    # languages we ALWAYS ignore in this function (they show up elsewhere anyway)
+    ignore_exact = [
+        "english",
+        "french",
+        "english and french",
+    ]
+
+    # materiality rules
+    MIN_PCT = 1.0   # at least ~1% of total pop
+    MIN_COUNT = 50  # fallback if we don't know pct
+
+    if pop_val_num is None or pop_val_num <= 0:
+        pop_val_num = None  # so we use raw count fallback
 
     lang_rows = df[
         df["Topic"].str.contains(LANGUAGE_TOPIC_REGEX, case=False, na=False)
@@ -298,95 +323,96 @@ def extract_significant_languages(df, geo_col, pop_val_num):
     significant = []
 
     for _, r in lang_rows.iterrows():
-        label = str(r["Characteristic"]).strip()
+        raw_label = str(r["Characteristic"]).strip()
         val_num = _coerce_number(r[geo_col])
-
         if val_num is None or val_num <= 0:
             continue
 
-        # skip English/French buckets
-        low_label = label.lower()
-        if "english" in low_label or "french" in low_label:
+        low_label = raw_label.lower()
+
+        # filter obvious junk
+        if any(bt in low_label for bt in block_terms):
+            continue
+        if any(low_label == ig for ig in ignore_exact):
+            continue
+        if any(low_label.startswith(ig) for ig in ignore_exact):
             continue
 
-        # skip generic buckets
-        if "other languages" in low_label:
+        # Also skip anything that's literally just "English", "French",
+        # "Both English and French", those we don't need here.
+        if "english" in low_label and "french" not in low_label and len(low_label.split()) <= 3:
             continue
-        if "multiple" in low_label:
-            continue
-        if "not included elsewhere" in low_label:
+        if "french" in low_label and "english" not in low_label and len(low_label.split()) <= 3:
             continue
 
-        # If StatCan labels like "German", "Cree languages", "Tagalog (Filipino)"
-        # we keep the raw label but tidy slightly:
-        clean_label = label
-        # Optional cleanup: remove trailing footnote markers like "[...]"
-        # or "(incl. dialects)" etc. Keep it simple for now.
-        clean_label = clean_label.replace(" languages", "")
-        clean_label = clean_label.replace(" language", "")
+        # Heuristic: keep things that look like named languages / ethnolinguistic communities
+        # e.g. "German", "Low German", "Tagalog (Filipino)", "Punjabi (Panjabi)",
+        # "Cree languages", "Blackfoot", "Dene", etc.
+        clean_label = raw_label
         clean_label = clean_label.replace(" (Filipino)", "")
         clean_label = clean_label.replace(" (Panjabi)", "")
-        clean_label = clean_label.replace(";", ",")
+        clean_label = clean_label.replace(" languages", "")
+        clean_label = clean_label.replace(" language", "")
         clean_label = clean_label.strip()
 
-        # materiality test
+        # if we know population, test percent
         is_material = False
         if pop_val_num:
             pct = (val_num / pop_val_num) * 100.0
-            if pct >= 1.0:
+            if pct >= MIN_PCT:
                 is_material = True
         else:
-            if val_num >= 50:
+            if val_num >= MIN_COUNT:
                 is_material = True
 
         if is_material:
             significant.append(clean_label)
 
-    # dedupe while preserving order
+    # Dedupe and keep order
     seen = set()
     ordered_unique = []
     for lang in significant:
-        base = lang.strip()
-        if base not in seen:
-            seen.add(base)
-            ordered_unique.append(base)
+        key = lang.lower()
+        if key not in seen:
+            seen.add(key)
+            ordered_unique.append(lang)
 
     return ordered_unique
 
 def extract_indigenous_nations(df, geo_col):
     """
-    Look inside Indigenous-related topics and try to identify which
-    nations / identities appear in non-trivial numbers.
-
-    We'll look for labels like:
-    - Cree
-    - Dene
-    - Blackfoot
-    - Stoney
-    - Saulteaux / Anishinaabe variants
-    - Métis
-    - Inuit
-
-    We'll filter out generic totals and zero/blank rows.
-    We don't currently force a % threshold because sometimes those counts are smaller
-    but still culturally important; instead we'll require val_num >= 20 for now.
-    You can adjust that threshold.
+    Return a list of Indigenous Nations / Peoples present in meaningful numbers.
+    We only surface culturally meaningful identifiers, not ancestry bookkeeping combos.
     """
 
     INDIG_TOPIC_REGEX = "Indigenous population|Indigenous ancestry|Indigenous identity"
-    possible_markers = [
+
+    # Words/phrases that we consider valid to surface
+    allowed_markers = [
         "cree",
         "dene",
         "blackfoot",
         "stoney",
         "saulteaux",
         "anishinaabe",
-        "ojibwe",  # just in case
-        "Métis".lower(),
-        "metis",   # accent-safe
+        "ojibwe",
+        "métis",
+        "metis",
         "inuit",
+        # we'll include general 'first nations' only if we don't get more specific
         "first nations",
-        "north american indian",
+    ]
+
+    # Phrases that we should IGNORE because they're structural/statistical, not communities
+    block_markers = [
+        "ancestry only",
+        "and non-indigenous",
+        "single ancestry",
+        "multiple aboriginal responses",
+        "first nations and métis",
+        "métis and non-indigenous",
+        "first nations, inuk (inuit), and métis",
+        "total",
     ]
 
     sub = df[df["Topic"].str.contains(INDIG_TOPIC_REGEX, case=False, na=False)].copy()
@@ -394,56 +420,69 @@ def extract_indigenous_nations(df, geo_col):
     found_groups = []
 
     for _, r in sub.iterrows():
-        label = str(r["Characteristic"]).strip()
+        raw_label = str(r["Characteristic"]).strip()
         val_num = _coerce_number(r[geo_col])
         if val_num is None or val_num <= 0:
             continue
 
-        lower_label = label.lower()
+        label_lower = raw_label.lower()
 
-        # skip rows that are clearly just overall totals
-        if "total" in lower_label and "aboriginal" in lower_label:
-            continue
-        if "total" in lower_label and "indigenous" in lower_label:
-            continue
-        if "total" == lower_label.strip():
+        # if it's clearly a total row or ancestry bookkeeping row, skip it
+        if any(b in label_lower for b in block_markers):
             continue
 
-        # try to detect explicit nations / peoples
-        hit_any = False
-        for marker in possible_markers:
-            if marker in lower_label:
-                hit_any = True
+        # does this row look like it names a specific Nation / People?
+        matched_marker = None
+        for marker in allowed_markers:
+            if marker in label_lower:
+                matched_marker = marker
                 break
+        if not matched_marker:
+            continue
 
-        if hit_any:
-            # simplify label for readability
-            clean_label = (
-                label.replace("First Nations (North American Indian)", "First Nations")
-                     .replace("Cree First Nations", "Cree")
-                     .replace("Cree nations", "Cree")
-                     .replace("Dene First Nations", "Dene")
-                     .replace("Blackfoot First Nations", "Blackfoot")
-                     .replace("Métis", "Métis")
-                     .replace("Metis", "Métis")
-                     .replace("Inuit", "Inuit")
-            )
-            clean_label = clean_label.strip()
-            # If StatCan phrases it "Cree First Nations individuals", we just want "Cree"
-            # quick trim:
-            for word in ["First Nations individuals", "First Nations persons", "First Nations people"]:
-                clean_label = clean_label.replace(word, "")
-            clean_label = clean_label.strip()
-            found_groups.append(clean_label)
+        # Clean up wording
+        clean_label = raw_label
+        # Simplifications for nicer output:
+        replacements = {
+            "First Nations (North American Indian)": "First Nations",
+            "Cree First Nations": "Cree",
+            "Cree nations": "Cree",
+            "Dene First Nations": "Dene",
+            "Blackfoot First Nations": "Blackfoot",
+            "Métis": "Métis",
+            "Metis": "Métis",
+            "Inuit": "Inuit",
+        }
+        for old, new in replacements.items():
+            clean_label = clean_label.replace(old, new)
 
-    # Deduplicate, keep order
+        # Strip noisy trailing phrases
+        strip_phrases = [
+            "First Nations individuals",
+            "First Nations persons",
+            "First Nations people",
+        ]
+        for phrase in strip_phrases:
+            clean_label = clean_label.replace(phrase, "")
+
+        clean_label = clean_label.strip()
+
+        found_groups.append(clean_label)
+
+    # Deduplicate while keeping order
     seen = set()
     ordered_unique = []
     for grp in found_groups:
-        base = grp.strip()
-        if base not in seen:
-            seen.add(base)
-            ordered_unique.append(base)
+        key = grp.lower()
+        if key not in seen:
+            seen.add(key)
+            ordered_unique.append(grp)
+
+    # If we captured both specific Nations (Cree, Dene, etc.) and a generic "First Nations",
+    # we can drop the generic "First Nations" because the specifics are better.
+    specific_terms = [g for g in ordered_unique if g.lower() not in ["first nations"]]
+    if specific_terms:
+        ordered_unique = specific_terms
 
     return ordered_unique
 
