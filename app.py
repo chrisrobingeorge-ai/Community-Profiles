@@ -971,6 +971,12 @@ def resolve_topic_column(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df = df.copy()
+    # Drop any pure description rows like "Commuting duration refers to ..."
+    desc_mask = df["Characteristic"].str.contains(r"\brefers to\b", case=False, na=False)
+    # Keep only rows that have at least one non-empty numeric-ish value
+    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Notes", "Note", "Symbol", "Flags", "Flag")]
+    has_data = df[value_cols].applymap(lambda x: str(x).strip()).apply(lambda row: any(v not in ["", "None", "nan", "NaN", "F", "X", "..", "..."] for v in row), axis=1)
+    df = df[~(desc_mask & ~has_data)].copy()
 
     # Start Topic_norm as Topic (string)
     df["Topic_norm"] = df.get("Topic", "").astype(str).str.strip()
