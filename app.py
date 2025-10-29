@@ -36,6 +36,22 @@ def _load_mapping_cached():
 @st.cache_data(show_spinner=True)
 def _load_data_cached():
     return load_data(Path("data/raw"))
+with st.sidebar:
+    st.subheader("Upload CSVs (optional)")
+    uploads = st.file_uploader(
+        "Drop StatCan CSV files here",
+        type=["csv", "csv.gz", "csv.zip"],
+        accept_multiple_files=True
+    )
+    if uploads:
+        Path("data/raw").mkdir(parents=True, exist_ok=True)
+        for f in uploads:
+            # Keep original file name if present
+            out_path = Path("data/raw") / (f.name or "uploaded.csv")
+            with open(out_path, "wb") as out:
+                out.write(f.getbuffer())
+        st.success(f"Saved {len(uploads)} file(s) to data/raw/.")
+        st.caption("Refresh to load them.")
 
 mapping = _load_mapping_cached()
 df = _load_data_cached()
