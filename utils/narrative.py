@@ -1,14 +1,17 @@
-from utils.data_loader import normalize_col
 from __future__ import annotations
 
 import io
 import re
 from pathlib import Path
 from typing import Dict
+
 import pandas as pd
 from docx import Document
 from docx.shared import Pt
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+# Use the same normalization as loader, so mapping names match row index reliably
+from utils.data_loader import normalize_col
 
 
 def _safe_get(row: pd.Series, col_name: str, default="N/A"):
@@ -22,8 +25,9 @@ def _safe_get(row: pd.Series, col_name: str, default="N/A"):
     if col_name in row.index:
         val = row[col_name]
     else:
-        # case-insensitive fallback
-        hits = [c for c in row.index if c.lower() == col_name.lower()]
+        # case-insensitive / normalization-aware fallback
+        target = normalize_col(col_name)
+        hits = [c for c in row.index if normalize_col(c) == target]
         val = row[hits[0]] if hits else default
     if pd.isna(val):
         return default
@@ -43,7 +47,6 @@ def _fmt_number(x):
             return f"{f:,.1f}"
         if abs(f) >= 1000:
             return f"{int(round(f)):,.0f}"
-        # keep one decimal if fractional
         return f"{f:.1f}" if not f.is_integer() else f"{int(f)}"
     except Exception:
         return x
@@ -56,7 +59,8 @@ def _fmt_percent(x):
     try:
         if x == "N/A":
             return x
-        f = float(str(x).replace("%", "").replace(",", "."))
+        s = str(x).replace("%", "").replace(",", "")
+        f = float(s)
         return f"{f:.1f}"
     except Exception:
         return x
@@ -70,30 +74,27 @@ def compose_context(row: pd.Series, mapping: Dict) -> Dict:
     geoid_col = ident.get("geoid_col", "GeoUID")
     name_col = ident.get("name_col", "Geographic name")
 
-    # Resolve actual column name in the row's index (case-insensitive)
-    def r(col):
+    def r(col: str) -> str:
         # exact
         if col in row.index:
             return col
-        # normalization-aware
+        # normalization-aware match
         target = normalize_col(col)
         for c in row.index:
             if normalize_col(c) == target:
                 return c
-        return col  # fallback; _safe_get will yield "N/A"
+        return col  # _safe_get will handle "N/A"
 
     context = {
         "geoid": str(_safe_get(row, r(geoid_col), "N/A")),
         "community_name": str(_safe_get(row, r(name_col), "N/A")),
     }
 
-    # helper to grab a subset into a dict and number/percent format where appropriate
     def section(key_map):
         out = {}
         for k, col in key_map.items():
             val = _safe_get(row, r(col), "N/A")
             sval = str(val)
-            # heuristics: fields named with pct/percentage or values ending with %
             if "%" in k or sval.endswith("%") or "pct" in k or "percentage" in k:
                 out[k] = _fmt_percent(val)
             elif any(token in k for token in ["median", "avg", "mean", "count", "total", "number"]):
@@ -102,7 +103,6 @@ def compose_context(row: pd.Series, mapping: Dict) -> Dict:
                 out[k] = _fmt_number(val)
         return out
 
-    # Map sections using the keys defined in fields.yaml
     ctx_sections = {
         "pop": section(mapping.get("population_and_dwellings", {})),
         "age": section(mapping.get("age_characteristics", {})),
@@ -138,7 +138,7 @@ def render_markdown(context: Dict, lang: str = "en") -> str:
     """
     Render the narrative using Jinja2 markdown template.
     """
-    template_file = "narrative_en.md.j2"
+    template_file = "narrative_en.md.j2"  # extend later if multi-language
     env = Environment(
         loader=FileSystemLoader(str(Path("templates"))),
         autoescape=select_autoescape(enabled_extensions=("md", "j2")),
@@ -153,7 +153,7 @@ def markdown_to_docx(md_text: str) -> bytes:
     """
     Very lightweight Markdown -> DOCX converter good enough for headings and paragraphs.
     - '#', '##', '###' become headings
-    - '**bold**' and '*italic*' markers are removed (no rich inline styling)
+    - '**bold**' and '*italic*' markers are removed (no inline styles)
     - lines starting with '- ' become bullet paragraphs
     - '---' inserts a page break
     """
