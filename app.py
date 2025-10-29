@@ -902,6 +902,19 @@ else:
 
     cleaned_df = filter_relevant_rows(raw_df)
 
+with st.sidebar:
+    st.markdown("### Real-time age adjustment")
+    use_age_adjust = st.checkbox("Age cohorts forward from 2021", value=True)
+    as_of = st.date_input("As-of date", value=date.today())
+
+# ...
+
+summary_text = generate_summary(
+    cleaned_df,
+    as_of_date=(as_of if use_age_adjust else None)
+)
+st.write(summary_text)
+    
     # NEW: Summary
     st.subheader("Community Profile Summary")
     summary_text = generate_summary(cleaned_df)
