@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import glob
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -29,7 +28,6 @@ def _read_csv_any(path: Path) -> pd.DataFrame:
     - if still failing, auto-sniff delimiter (engine='python')
     - last resort: explicitly try semicolon
     """
-    # 1) Preferred encodings
     try:
         return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
     except UnicodeDecodeError:
@@ -37,61 +35,11 @@ def _read_csv_any(path: Path) -> pd.DataFrame:
             return pd.read_csv(path, encoding="latin-1", low_memory=False)
         except Exception:
             pass
-    # 2) Auto-sniff delimiter
     try:
         return pd.read_csv(path, sep=None, engine="python", low_memory=False)
     except Exception:
         pass
-    # 3) Semicolon fallback (some StatCan extracts)
     return pd.read_csv(path, sep=";", low_memory=False)
-
-
-def load_data(raw_dir: Path) -> pd.DataFrame:
-    """
-    Load one or multiple CSVs under data/raw. If multiple, vertically concatenate and align columns.
-
-    Improvements:
-    - Case-insensitive extension match (.csv, .CSV, etc.)
-    - Recursive into subfolders
-    - Accept compressed CSVs (.csv.gz, .csv.zip) that pandas can read
-    """
-    raw_dir = Path(raw_dir)
-
-    def is_csv_like(p: Path) -> bool:
-        low = p.name.lower()
-        return (
-            p.is_file()
-            and (
-                low.endswith(".csv")
-                or low.endswith(".csv.gz")
-                or low.endswith(".csv.zip")
-            )
-        )
-
-    csvs = sorted([p for p in raw_dir.rglob("*") if is_csv_like(p)])
-    if not csvs:
-        return pd.DataFrame()
-
-    frames = []
-    all_cols: set = set()
-    for p in csvs:
-        df = _read_csv_any(p)
-        # Strip BOM/whitespace in headers and normalize for matching
-        df.columns = [normalize_col(c) for c in df.columns]
-        frames.append(df)
-        all_cols.update(df.columns)
-
-    # Align columns across files
-    aligned_frames: List[pd.DataFrame] = []
-    all_cols_list = list(all_cols)
-    for df in frames:
-        for c in all_cols_list:
-            if c not in df.columns:
-                df[c] = pd.NA
-        aligned_frames.append(df[all_cols_list])
-
-    merged = pd.concat(aligned_frames, axis=0, ignore_index=True)
-    return merged
 
 
 def normalize_col(col: str) -> str:
@@ -108,6 +56,182 @@ def normalize_col(col: str) -> str:
     return c
 
 
+def _is_topic_characteristic_matrix(df: pd.DataFrame) -> bool:
+    """
+    Heuristic: detect StatCan matrix with 'Topic' + 'Characteristic' columns,
+    and many geography columns to the right.
+    """
+    cols_norm = [normalize_col(c) for c in df.columns]
+    return ("topic" in cols_norm) and ("characteristic" in cols_norm) and (len(df.columns) >= 4)
+
+
+def _reshape_topic_characteristic_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert a Topic/Characteristic × Geography-columns matrix into a
+    row-per-geography table using 'Characteristic' as the feature columns.
+
+    Output columns:
+    - 'Geographic name'
+    - one column per distinct Characteristic (values are the cell entries)
+    """
+    # Keep only the first occurrence if duplicate column names slipped in
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # Identify core columns
+    # Use original casing to preserve characteristic strings
+    def find_col(target: str) -> Optional[str]:
+        for c in df.columns:
+            if normalize_col(c) == target:
+                return c
+        return None
+
+    topic_col = find_col("topic")
+    char_col = find_col("characteristic")
+    if topic_col is None or char_col is None:
+        return pd.DataFrame()
+
+    # Drop fully empty columns (lots of leading commas in some extracts)
+    df = df.dropna(axis=1, how="all")
+
+    # Geography columns = everything except Topic/Characteristic and common junk columns
+    junk_norm = {
+        "note", "total", "total_flag", "men+", "men+_flag", "women+", "women+_flag",
+        "rate", "rates"
+    }
+    geo_cols = []
+    for c in df.columns:
+        n = normalize_col(c)
+        if n in (normalize_col(topic_col), normalize_col(char_col)):
+            continue
+        if n in junk_norm:
+            continue
+        geo_cols.append(c)
+
+    # If nothing looks like geography columns, bail
+    if not geo_cols:
+        return pd.DataFrame()
+
+    # Melt to long (Topic, Characteristic, Geography name, Value)
+    long = df.melt(
+        id_vars=[topic_col, char_col],
+        value_vars=geo_cols,
+        var_name="Geographic name",
+        value_name="value",
+    )
+
+    # Some files have extra header rows, blanks, or '...' placeholders — clean them
+    # Keep rows where Characteristic is non-null and not just empty/commas
+    mask_valid_char = long[char_col].astype(str).str.strip().ne("")
+    long = long[mask_valid_char].copy()
+
+    # We only want the numeric/text value cells; drop empty or '...' markers
+    def _clean_cell(x):
+        s = str(x).strip()
+        if s in {"...", "", "nan", "None"}:
+            return pd.NA
+        return s
+
+    long["value"] = long["value"].map(_clean_cell)
+
+    # Pivot so each Characteristic becomes a column; keep the FIRST non-null per (Geo, Characteristic)
+    # In case the same Characteristic appears under multiple Topics, we'll aggregate by first valid.
+    pivot = (
+        long.dropna(subset=["value"])
+            .groupby(["Geographic name", char_col], as_index=False)["value"]
+            .first()
+            .pivot(index="Geographic name", columns=char_col, values="value")
+            .reset_index()
+    )
+
+    # Rename index column to match app's identity name_col
+    pivot = pivot.rename(columns={"Geographic name": "Geographic name"})
+
+    # Normalize headers for later matching (but keep readable values)
+    pivot.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in pivot.columns]
+
+    return pivot
+
+
+def _align_and_concat(frames: List[pd.DataFrame]) -> pd.DataFrame:
+    """
+    Given a list of per-community wide tables, normalize headers and align columns.
+    """
+    if not frames:
+        return pd.DataFrame()
+    # Normalize headers like in original loader
+    for i in range(len(frames)):
+        frames[i].columns = [normalize_col(c) for c in frames[i].columns]
+    all_cols = set()
+    for df in frames:
+        all_cols.update(df.columns)
+    all_cols = list(all_cols)
+    aligned = []
+    for df in frames:
+        for c in all_cols:
+            if c not in df.columns:
+                df[c] = pd.NA
+        aligned.append(df[all_cols])
+    return pd.concat(aligned, axis=0, ignore_index=True)
+
+
+def load_data(raw_dir: Path) -> pd.DataFrame:
+    """
+    Load one or multiple CSVs under data/raw. If multiple, reshape as needed,
+    then vertically concatenate and align columns.
+
+    - Case-insensitive extension match (.csv, .CSV, etc.)
+    - Recursive into subfolders
+    - Accept compressed CSVs (.csv.gz, .csv.zip) that pandas can read
+    - If a file is in Topic/Characteristic × Geography matrix format,
+      reshape it into a per-community wide table
+    """
+    raw_dir = Path(raw_dir)
+
+    def is_csv_like(p: Path) -> bool:
+        low = p.name.lower()
+        return (
+            p.is_file()
+            and (low.endswith(".csv") or low.endswith(".csv.gz") or low.endswith(".csv.zip"))
+        )
+
+    paths = sorted([p for p in raw_dir.rglob("*") if is_csv_like(p)])
+    if not paths:
+        return pd.DataFrame()
+
+    reshaped_frames: List[pd.DataFrame] = []
+
+    for p in paths:
+        df = _read_csv_any(p)
+
+        # Fast path: if it already looks like row-per-community with identity columns, just normalize headers
+        cols_norm = [normalize_col(c) for c in df.columns]
+        has_name = "geographic name" in cols_norm or "geo name" in cols_norm or "name" in cols_norm
+        has_geouid = "geouid" in cols_norm or "geo uid" in cols_norm
+        if has_name or has_geouid:
+            df.columns = [normalize_col(c) for c in df.columns]
+            reshaped_frames.append(df)
+            continue
+
+        # Matrix path
+        if _is_topic_characteristic_matrix(df):
+            wide = _reshape_topic_characteristic_matrix(df)
+            if not wide.empty:
+                wide.columns = [normalize_col(c) for c in wide.columns]
+                # Ensure identity column exists for app (use name; GeoUID may be missing in these extracts)
+                if "geographic name" not in wide.columns:
+                    wide = wide.rename(columns={wide.columns[0]: "geographic name"})
+                reshaped_frames.append(wide)
+                continue
+
+        # If we get here, we couldn't recognize the shape; try a lenient normalization and keep as-is
+        df.columns = [normalize_col(c) for c in df.columns]
+        reshaped_frames.append(df)
+
+    merged = _align_and_concat(reshaped_frames)
+
+    return merged
+
+
 def resolve_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     """
     Given human-readable candidate names, return the actual df column key (normalized) if found.
@@ -121,7 +245,6 @@ def resolve_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
         if key in normalized_cols:
             return normalized_cols[key]
 
-    # Try looser matching: remove punctuation
     def strip_punct(s: str) -> str:
         return re.sub(r"[^\w\s]", "", s)
 
@@ -140,7 +263,6 @@ def list_communities(df: pd.DataFrame, geoid_col: str, name_col: str) -> List[st
     geoid_key = resolve_column(df, [geoid_col, "geouid"])
     name_key = resolve_column(df, [name_col, "geographic name", "geo name", "name"])
     if name_key is None and geoid_key in df.columns:
-        # Fall back to GeoUID as a string
         return sorted(df[geoid_key].astype(str).fillna("Unknown").unique().tolist())
     if name_key is None:
         return []
@@ -202,12 +324,7 @@ def gather_column_status(df: pd.DataFrame, mapping: Dict) -> Tuple[pd.DataFrame,
         total = len(norm_cols) if norm_cols else 0
         pct = (present / total * 100) if total else 0
         rows.append(
-            {
-                "section": section,
-                "present": present,
-                "required": total,
-                "coverage_pct": round(pct),
-            }
+            {"section": section, "present": present, "required": total, "coverage_pct": round(pct)}
         )
         present_total += present
         required_total += total
