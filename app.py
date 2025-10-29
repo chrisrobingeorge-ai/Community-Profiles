@@ -496,7 +496,9 @@ def generate_summary(df: pd.DataFrame) -> str:
 
     lines = []
 
-    # --- Population (for % math later) ---
+    # -------------------------------------------------
+    # 1. Population (for % math)
+    # -------------------------------------------------
     pop_rows = df[
         (df["Topic"].str.contains("Population and dwellings", case=False, na=False)) &
         (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
@@ -509,7 +511,9 @@ def generate_summary(df: pd.DataFrame) -> str:
                 f"This community has approximately {int(round(pop_val_num, 0))} residents."
             )
 
-    # --- Age structure ---
+    # -------------------------------------------------
+    # 2. Age structure (kids, seniors)
+    # -------------------------------------------------
     kids_val = _best_numeric_from(
         df,
         topic_regex="Age characteristics",
@@ -529,7 +533,7 @@ def generate_summary(df: pd.DataFrame) -> str:
         if kids_val and kids_val > 0 and kids_val < pop_val_num:
             kids_pct = (kids_val / pop_val_num) * 100.0
         if seniors_val and seniors_val > 0 and seniors_val < pop_val_num:
-            seniors_pct = (seniors_val / seniors_val if seniors_val == pop_val_num else seniors_val / pop_val_num) * 100.0
+            seniors_pct = (seniors_val / pop_val_num) * 100.0
 
     age_bits = []
     if kids_pct and kids_pct >= 1.0:
@@ -552,7 +556,10 @@ def generate_summary(df: pd.DataFrame) -> str:
                 f"{age_bits[0]}. We should expect to serve a large number of school-age kids in this community."
             )
 
-    # --- Household structure ---
+    # -------------------------------------------------
+    # 3. Household structure / stability
+    #    (single caregivers, household size, renter/owner)
+    # -------------------------------------------------
     single_parent_share = _best_numeric_from(
         df,
         topic_regex="Household type|Household and dwelling characteristics",
@@ -560,12 +567,14 @@ def generate_summary(df: pd.DataFrame) -> str:
         geo_col=geo_col,
         min_pct=1.0,
     )
+
     hh_size = _best_numeric_from(
         df,
         topic_regex="Household and dwelling characteristics",
         char_regex="Average household size",
         geo_col=geo_col,
     )
+
     renters_share = _best_numeric_from(
         df,
         topic_regex="Household and dwelling characteristics|Household type",
@@ -573,6 +582,7 @@ def generate_summary(df: pd.DataFrame) -> str:
         geo_col=geo_col,
         min_pct=1.0,
     )
+
     owners_share = _best_numeric_from(
         df,
         topic_regex="Household and dwelling characteristics|Household type",
@@ -581,21 +591,29 @@ def generate_summary(df: pd.DataFrame) -> str:
         min_pct=1.0,
     )
 
+    # -------------------------------------------------
+    # 4. Income pressure (define it EARLY so we can use it below)
+    # -------------------------------------------------
+    low_income_val = _best_numeric_from(
+        df,
+        topic_regex="Low income and income inequality",
+        char_regex=None,
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+
     household_barrier_lines = []
 
-    # Single parent load
     if single_parent_share:
         household_barrier_lines.append(
             "There is a notable share of one-parent households, meaning many caregivers are doing this alone."
         )
-    
-    # Household size as signal of multiple kids / multigen
+
     if hh_size and hh_size >= 2.5:
         household_barrier_lines.append(
             f"Average household size is about {hh_size:.1f} people, so programming should assume multiple kids per family and sometimes multigenerational households."
         )
-    
-    # Housing stability / renting
+
     if renters_share and (not owners_share or renters_share > owners_share):
         household_barrier_lines.append(
             "Housing leans toward renting, which usually means less stability and more moves."
@@ -604,18 +622,18 @@ def generate_summary(df: pd.DataFrame) -> str:
         household_barrier_lines.append(
             "Most homes appear to be owner-occupied, which suggests some families are rooted here long-term."
         )
-    
-    # Income pressure
+
     if low_income_val:
         household_barrier_lines.append(
             "Income data suggests affordability will be a barrier. Families report program fees, gear, and travel costs as major blockers, especially outside big cities. We should plan for low- or no-cost access, not assume families can pay."
         )
-    
+
     if household_barrier_lines:
         lines.append(" ".join(household_barrier_lines))
 
-
-    # --- Indigenous nations / identities ---
+    # -------------------------------------------------
+    # 5. Indigenous Nations / Peoples
+    # -------------------------------------------------
     nations = extract_indigenous_nations(df, geo_col)
     if nations:
         if len(nations) == 1:
@@ -628,7 +646,11 @@ def generate_summary(df: pd.DataFrame) -> str:
                 f"Indigenous presence: {nation_list_text} are present in meaningful numbers. Programming should be coordinated with local Indigenous leadership and should expect Indigenous youth participation."
             )
 
-    # --- Newcomers / immigration ---
+    # -------------------------------------------------
+    # 6. Language / newcomer communities
+    # -------------------------------------------------
+    specific_langs = extract_significant_languages(df, geo_col, pop_val_num)
+
     newcomer_val = _best_numeric_from(
         df,
         topic_regex="Immigrant status and period of immigration|Selected places of birth for the recent immigrant population",
@@ -636,13 +658,7 @@ def generate_summary(df: pd.DataFrame) -> str:
         geo_col=geo_col,
         min_pct=1.0,
     )
-    if newcomer_val:
-        lines.append(
-            "There is a visible newcomer / recent immigrant population. Cultural responsiveness, translation support, and parent-facing communication will matter."
-        )
 
-    # --- Language landscape, including specific home languages ---
-    specific_langs = extract_significant_languages(df, geo_col, pop_val_num)
     minority_lang_val = _best_numeric_from(
         df,
         topic_regex="Children eligible for instruction in the minority official language|Eligibility and instruction in the minority official language",
@@ -652,73 +668,35 @@ def generate_summary(df: pd.DataFrame) -> str:
     )
 
     lang_sentences = []
+
     if specific_langs:
         if len(specific_langs) == 1:
             lang_sentences.append(
-                f"Families speak {specific_langs[0]} at home in meaningful numbers. Outreach and parent communication may need to happen in that language, not just English."
+                f"Families speak {specific_langs[0]} at home in meaningful numbers. Parent communication and registration may need to happen in that language, not just English."
             )
         else:
             lang_sentences.append(
                 "Families speak " +
                 ", ".join(specific_langs[:-1]) +
-                f", and {specific_langs[-1]} at home in meaningful numbers. Outreach and parent communication may need to include these languages, not just English."
+                f", and {specific_langs[-1]} at home in meaningful numbers. Parent communication and registration may need to include these languages, not just English."
             )
-    
+
     if newcomer_val:
         lang_sentences.append(
             "There is a visible newcomer / recent immigrant population. Trust-building may require connectors who already work with these families (schools, settlement services, cultural associations)."
         )
-    
+
     if minority_lang_val:
         lang_sentences.append(
-            "Some children here are legally entitled to minority-language (Francophone) education, so French-language access is part of the expectations."
+            "Some children here are legally entitled to minority-language (Francophone) education, so French-language access is an expectation."
         )
-    
+
     if lang_sentences:
         lines.append(" ".join(lang_sentences))
 
-    # --- Education level ---
-    hs_val = _best_numeric_from(
-        df,
-        topic_regex="Secondary \\(high\\) school diploma|Highest certificate, diploma or degree",
-        char_regex="high school diploma|secondary",
-        geo_col=geo_col,
-        min_pct=1.0,
-    )
-    uni_val = _best_numeric_from(
-        df,
-        topic_regex="Highest certificate, diploma or degree",
-        char_regex="bachelor|university|degree",
-        geo_col=geo_col,
-        min_pct=1.0,
-    )
-    if hs_val and uni_val:
-        lines.append(
-            "Education levels are mixed: many adults report high school or trades credentials, and there is also a group with university-level education."
-        )
-    elif hs_val and not uni_val:
-        lines.append(
-            "Most adults appear to hold high school or trades-level credentials rather than university degrees."
-        )
-    elif uni_val and not hs_val:
-        lines.append(
-            "A significant share of adults report university-level credentials."
-        )
-
-    # --- Low income / affordability ---
-    low_income_val = _best_numeric_from(
-        df,
-        topic_regex="Low income and income inequality",
-        char_regex=None,
-        geo_col=geo_col,
-        min_pct=1.0,
-    )
-    if low_income_val:
-        lines.append(
-            "Affordability is a real factor: some households are living with low income or inequality, so cost can be a barrier without subsidy."
-        )
-
-    # --- Mobility / rootedness ---
+    # -------------------------------------------------
+    # 7. Mobility / rootedness (are families newly arrived / moving)
+    # -------------------------------------------------
     mobility_rows = df[
         df["Topic"].str.contains("Mobility status 1 year ago|Mobility status 5 years ago",
                                  case=False, na=False)
@@ -730,15 +708,19 @@ def generate_summary(df: pd.DataFrame) -> str:
         if mv and mv > 0 and ("moved" in row_char or "different" in row_char):
             mobility_flag = True
             break
+
     if mobility_flag:
         lines.append(
-            "Families are still moving in and settling, which means not everyone has long-standing local supports yet."
+            "Families are still moving in and settling. Not everyone has long-standing local support networks yet."
         )
 
-    # --- Commuting / time pressure ---
+    # -------------------------------------------------
+    # 8. Commuting / scheduling pressure
+    # -------------------------------------------------
     commute_rows = df[
         df["Topic"].str.contains("Main mode of commuting|Commuting duration", case=False, na=False)
     ]
+
     long_commute_flag = False
     car_commute_flag = False
     for _, r in commute_rows.iterrows():
@@ -748,34 +730,35 @@ def generate_summary(df: pd.DataFrame) -> str:
             continue
         if "60 minutes" in row_char or "longer" in row_char:
             long_commute_flag = True
-        if "car" in row_char or "automobile" in row_char or "driver" in row_char:
+        if ("car" in row_char or "automobile" in row_char or "driver" in row_char):
             car_commute_flag = True
+
     if car_commute_flag or long_commute_flag:
         if car_commute_flag and long_commute_flag:
             commute_sentence = (
                 "Most working adults rely on driving, and some families are already doing long daily commutes."
             )
         elif car_commute_flag:
-            commute_sentence = (
-                "Most working adults rely on driving."
-            )
+            commute_sentence = "Most working adults rely on driving."
         else:
-            commute_sentence = (
-                "Some families are already doing long daily commutes."
-            )
-    
+            commute_sentence = "Some families are already doing long daily commutes."
+
         lines.append(
             commute_sentence +
             " Programs should run locally (school / community space) right after school or early evening, because asking families to add more travel time is unrealistic."
         )
 
-    if not lines:
-        return "This community profile did not surface notable demographic features from the selected census fields."
-
+    # -------------------------------------------------
+    # 9. Operational takeaway for staff
+    # -------------------------------------------------
     lines.append(
-        "Operational takeaway: deliver programming in-town, keep cost as close to zero as possible, partner with local schools and Indigenous leadership early, and assume multi-language parent communication may be necessary."
+        "Operational takeaway: deliver programming in-town, keep direct cost as close to zero as possible, coordinate early with schools and Indigenous leadership, and plan for multilingual parent communication."
     )
 
+    # -------------------------------------------------
+    # Final assembly
+    # -------------------------------------------------
+    # Join into one readable paragraph
     return " ".join(lines)
 
 # ------------------------------------------------
