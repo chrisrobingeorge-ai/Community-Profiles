@@ -56,6 +56,23 @@ with st.sidebar:
 mapping = _load_mapping_cached()
 df = _load_data_cached()
 
+mapping = _load_mapping_cached()
+df = _load_data_cached()
+
+# --- DEBUG: what's actually on disk? (remove after)
+from pathlib import Path
+with st.sidebar:
+    st.caption("Debug: working dir and files in data/raw")
+    st.write(f"CWD: {Path.cwd()}")
+    files = [str(p) for p in Path("data/raw").rglob("*") if p.is_file()]
+    st.write(files[:50] if len(files) > 50 else files)
+
+if df.empty:
+    st.warning(
+        "No data was found in `data/raw/`. Please place your Statistics Canada CSV file(s) there and refresh."
+    )
+    st.stop()
+
 if df.empty:
     st.warning(
         "No data was found in `data/raw/`. Please place your Statistics Canada CSV file(s) there and refresh."
