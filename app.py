@@ -895,59 +895,57 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is None:
     st.info("Upload a CSV to generate the community profile.")
+    st.stop()
 else:
+    # 1) Load + filter
     raw_df = load_statcan_csv(uploaded_file)
+    cleaned_df = filter_relevant_rows(raw_df)
 
+    # 2) Sidebar controls (age-to-date)
+    with st.sidebar:
+        st.markdown("### Real-time age adjustment")
+        use_age_adjust = st.checkbox("Age cohorts forward from 2021", value=True)
+        as_of = st.date_input("As-of date", value=date.today())
+
+    # 3) Summary (uses the age controls)
+    st.subheader("Community Profile Summary")
+    summary_text = generate_summary(
+        cleaned_df,
+        as_of_date=(as_of if use_age_adjust else None)
+    )
+    st.write(summary_text)
+
+    # 4) Filtered table view
+    st.subheader("Filtered Report")
+    render_report(cleaned_df)
+
+    # 5) Raw preview (optional)
     st.subheader("Raw Preview (first 20 rows)")
     st.dataframe(raw_df.head(20), use_container_width=True)
 
-    cleaned_df = filter_relevant_rows(raw_df)
+    # 6) Exports
+    st.subheader("Export")
+    col1, col2 = st.columns(2)
+    with col1:
+        csv_bytes = build_filtered_csv(cleaned_df)
+        st.download_button(
+            label="⬇️ Download filtered CSV",
+            data=csv_bytes,
+            file_name="community_profile_filtered.csv",
+            mime="text/csv",
+        )
+    with col2:
+        html_str = build_printable_html(cleaned_df)
+        html_bytes = html_str.encode("utf-8")
+        st.download_button(
+            label="⬇️ Download printable report (HTML)",
+            data=html_bytes,
+            file_name="community_profile_report.html",
+            mime="text/html",
+        )
 
-with st.sidebar:
-    st.markdown("### Real-time age adjustment")
-    use_age_adjust = st.checkbox("Age cohorts forward from 2021", value=True)
-    as_of = st.date_input("As-of date", value=date.today())
-
-# ...
-
-summary_text = generate_summary(
-    cleaned_df,
-    as_of_date=(as_of if use_age_adjust else None)
-)
-st.write(summary_text)
-    
-# NEW: Summary
-st.subheader("Community Profile Summary")
-summary_text = generate_summary(cleaned_df)
-st.write(summary_text)
-
-# Existing table view
-st.subheader("Filtered Report")
-render_report(cleaned_df)
-
-# Existing export section
-st.subheader("Export")
-col1, col2 = st.columns(2)
-with col1:
-    csv_bytes = build_filtered_csv(cleaned_df)
-    st.download_button(
-        label="⬇️ Download filtered CSV",
-        data=csv_bytes,
-        file_name="community_profile_filtered.csv",
-        mime="text/csv",
+    st.markdown(
+        """
+        **Note:** You can open the downloaded HTML file in any browser and use 'Print' → 'Save as PDF'.
+        """
     )
-with col2:
-    html_str = build_printable_html(cleaned_df)
-    html_bytes = html_str.encode("utf-8")
-    st.download_button(
-        label="⬇️ Download printable report (HTML)",
-        data=html_bytes,
-        file_name="community_profile_report.html",
-        mime="text/html",
-    )
-
-st.markdown(
-    """
-**Note:** You can open the downloaded HTML file in any browser and use 'Print' → 'Save as PDF'.
-"""
-)
