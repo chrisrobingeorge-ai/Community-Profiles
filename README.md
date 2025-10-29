@@ -1,14 +1,25 @@
-# Community Profiles (Statistics Canada) — Streamlit App
-Generate **narratively written community profiles** using **Statistics Canada** CSV files.  
-Built with **Streamlit**, **Pandas**, and **Jinja2**, with export to **Markdown** and **Word (.docx)**.
+# Community Profile Extractor
 
-## ✨ Features
-- Reads one master CSV or multiple CSVs from `data/raw/`
-- Choose a community by name or enter a **GeoUID**
-- 24-section narrative aligned to common Census Profile topics
-- Mapping-driven: adjust `metadata/fields.yaml` to your exact column headers
-- Download **.md** and **.docx**
-- “Data Health Check” shows mapping coverage by section
+This Streamlit app takes a Statistics Canada 2021 Census Profile CSV (community profile)
+and extracts only the fields relevant to community planning for Growing Up Strong:
+population, age, households, income, language, immigration, Indigenous identity,
+mobility, commuting, etc.
 
-## 🗂 Project structure
-``
+## How to use (Streamlit Cloud)
+
+1. Put these two files in the repo:
+   - app.py
+   - requirements.txt
+
+2. Go to Streamlit Community Cloud and create a new app from this repo.
+
+3. When the app is running in the browser:
+   - Click "Browse files" to upload a Census Profile CSV you downloaded from Statistics Canada.
+   - The app shows:
+     - A raw preview of the file
+     - A filtered report for only the fields we care about
+     - Download buttons for:
+       - Filtered CSV
+       - Printable HTML report (you can Save as PDF in your browser)
+
+No local install is required.
