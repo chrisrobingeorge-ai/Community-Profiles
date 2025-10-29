@@ -1,3 +1,4 @@
+from utils.data_loader import normalize_col
 from __future__ import annotations
 
 import io
@@ -71,12 +72,15 @@ def compose_context(row: pd.Series, mapping: Dict) -> Dict:
 
     # Resolve actual column name in the row's index (case-insensitive)
     def r(col):
+        # exact
         if col in row.index:
             return col
+        # normalization-aware
+        target = normalize_col(col)
         for c in row.index:
-            if c.lower() == col.lower():
+            if normalize_col(c) == target:
                 return c
-        return col  # may not exist; _safe_get will handle "N/A"
+        return col  # fallback; _safe_get will yield "N/A"
 
     context = {
         "geoid": str(_safe_get(row, r(geoid_col), "N/A")),
