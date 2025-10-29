@@ -4,7 +4,7 @@ _Note: Values reflect the selected community and available columns in your CSV._
 
 {% if pop.total_population != "N/A" %}
 ## 1) Population and dwellings
-In {{ community_name }}, the **2021 population** was {{ pop.total_population }}{% if pop.population_change_pct_2016_2021 != "N/A" %}, {{ "up" if pop.population_change_pct_2016_2021|float(default=0) >= 0 else "down" }} {{ pop.population_change_pct_2016_2021 }}% from 2016{% endif %}{% if pop.population_2016 != "N/A" %} ({{ pop.population_2016 }}){% endif %}. {% if pop.total_private_dwellings != "N/A" %}There were **{{ pop.total_private_dwellings }}** private dwellings{% if pop.private_dwellings_occupied != "N/A" %}, of which **{{ pop.private_dwellings_occupied }}** were occupied by usual residents{% endif %}.{% endif %}
+In {{ community_name }}, the **2021 population** was {{ pop.total_population }}{% if pop.population_change_pct_2016_2021 != "N/A" %}, {{ "up" if (pop.population_change_pct_2016_2021 | default(0) | float) >= 0 else "down" }} {{ pop.population_change_pct_2016_2021 }}% from 2016{% endif %}{% if pop.population_2016 != "N/A" %} ({{ pop.population_2016 }}){% endif %}. {% if pop.total_private_dwellings != "N/A" %}There were **{{ pop.total_private_dwellings }}** private dwellings{% if pop.private_dwellings_occupied != "N/A" %}, of which **{{ pop.private_dwellings_occupied }}** were occupied by usual residents{% endif %}.{% endif %}
 {% endif %}
 
 {% if age.median_age != "N/A" %}
