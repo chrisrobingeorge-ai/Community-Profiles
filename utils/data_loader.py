@@ -24,20 +24,51 @@ def load_mapping(path: Path) -> Dict:
 
 def _read_csv_any(path: Path) -> pd.DataFrame:
     """
-    Read a CSV with forgiving options (utf-8-sig, then fallback).
+    Read a CSV with forgiving options:
+    - try utf-8-sig, then latin-1
+    - if still failing, auto-sniff delimiter (engine='python')
+    - last resort: explicitly try semicolon
     """
+    # 1) Preferred encodings
     try:
         return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
     except UnicodeDecodeError:
-        return pd.read_csv(path, encoding="latin-1", low_memory=False)
+        try:
+            return pd.read_csv(path, encoding="latin-1", low_memory=False)
+        except Exception:
+            pass
+    # 2) Auto-sniff delimiter
+    try:
+        return pd.read_csv(path, sep=None, engine="python", low_memory=False)
+    except Exception:
+        pass
+    # 3) Semicolon fallback (some StatCan extracts)
+    return pd.read_csv(path, sep=";", low_memory=False)
 
 
 def load_data(raw_dir: Path) -> pd.DataFrame:
     """
     Load one or multiple CSVs under data/raw. If multiple, vertically concatenate and align columns.
+
+    Improvements:
+    - Case-insensitive extension match (.csv, .CSV, etc.)
+    - Recursive into subfolders
+    - Accept compressed CSVs (.csv.gz, .csv.zip) that pandas can read
     """
     raw_dir = Path(raw_dir)
-    csvs = sorted([Path(p) for p in glob.glob(str(raw_dir / "*.csv"))])
+
+    def is_csv_like(p: Path) -> bool:
+        low = p.name.lower()
+        return (
+            p.is_file()
+            and (
+                low.endswith(".csv")
+                or low.endswith(".csv.gz")
+                or low.endswith(".csv.zip")
+            )
+        )
+
+    csvs = sorted([p for p in raw_dir.rglob("*") if is_csv_like(p)])
     if not csvs:
         return pd.DataFrame()
 
@@ -66,8 +97,10 @@ def load_data(raw_dir: Path) -> pd.DataFrame:
 def normalize_col(col: str) -> str:
     """
     Canonicalize a column name for matching:
-    - strip, lower
+    - cast to str
     - collapse whitespace to single space
+    - strip
+    - lower
     """
     if col is None:
         return ""
@@ -78,7 +111,7 @@ def normalize_col(col: str) -> str:
 def resolve_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     """
     Given human-readable candidate names, return the actual df column key (normalized) if found.
-    We compare on normalized representations.
+    We compare on normalized representations, with a punctuation-stripped fallback.
     """
     if df is None or df.empty or not candidates:
         return None
@@ -87,6 +120,7 @@ def resolve_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
         key = normalize_col(cand)
         if key in normalized_cols:
             return normalized_cols[key]
+
     # Try looser matching: remove punctuation
     def strip_punct(s: str) -> str:
         return re.sub(r"[^\w\s]", "", s)
