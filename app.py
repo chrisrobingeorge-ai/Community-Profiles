@@ -243,21 +243,211 @@ def pick_geo_col(df: pd.DataFrame) -> str | None:
 
     return best_col
 
+def _best_numeric_from(df, topic_regex=None, char_regex=None, geo_col=None, min_pct=None):
+    """
+    Convenience finder:
+    - Filter df by Topic containing topic_regex (case-insensitive) if provided
+    - AND/OR Characteristic containing char_regex if provided
+    - Look at the first nonzero numeric in geo_col
+    - If min_pct is provided, require that numeric >= min_pct (treating it as percent or share)
+    Returns that numeric (float) or None.
+    """
+    sub = df.copy()
+    if topic_regex:
+        sub = sub[sub["Topic"].str.contains(topic_regex, case=False, na=False)]
+    if char_regex:
+        sub = sub[sub["Characteristic"].str.contains(char_regex, case=False, na=False)]
+    for _, r in sub.iterrows():
+        num = _coerce_number(r[geo_col])
+        if num is None or num <= 0:
+            continue
+        # if user wants to skip "insignificant", apply threshold
+        if min_pct is not None and num < min_pct:
+            continue
+        return num
+    return None
+
+def extract_significant_languages(df, geo_col, pop_val_num):
+    """
+    Look at home languages from relevant topics and pull out
+    specific non-English/non-French languages that appear
+    in meaningful numbers.
+
+    We'll scan characteristics like "German", "Tagalog (Filipino)",
+    "Punjabi (Panjabi)", "Cree languages", etc.
+
+    We'll ignore junk rows like "English", "French", "Both English and French",
+    "Other languages", "Multiple responses".
+
+    Heuristic for 'meaningful':
+    - If we know total pop: language count/pop >= 1%
+    - Else: raw count >= 50 (tunable)
+    """
+
+    if pop_val_num is None or pop_val_num <= 0:
+        pop_val_num = None  # we'll fall back to raw-count threshold
+
+    LANGUAGE_TOPIC_REGEX = (
+        "Mother tongue|Language spoken most often at home|Other language spoken regularly at home"
+    )
+
+    lang_rows = df[
+        df["Topic"].str.contains(LANGUAGE_TOPIC_REGEX, case=False, na=False)
+    ].copy()
+
+    significant = []
+
+    for _, r in lang_rows.iterrows():
+        label = str(r["Characteristic"]).strip()
+        val_num = _coerce_number(r[geo_col])
+
+        if val_num is None or val_num <= 0:
+            continue
+
+        # skip English/French buckets
+        low_label = label.lower()
+        if "english" in low_label or "french" in low_label:
+            continue
+
+        # skip generic buckets
+        if "other languages" in low_label:
+            continue
+        if "multiple" in low_label:
+            continue
+        if "not included elsewhere" in low_label:
+            continue
+
+        # If StatCan labels like "German", "Cree languages", "Tagalog (Filipino)"
+        # we keep the raw label but tidy slightly:
+        clean_label = label
+        # Optional cleanup: remove trailing footnote markers like "[...]"
+        # or "(incl. dialects)" etc. Keep it simple for now.
+        clean_label = clean_label.replace(" languages", "")
+        clean_label = clean_label.replace(" language", "")
+        clean_label = clean_label.replace(" (Filipino)", "")
+        clean_label = clean_label.replace(" (Panjabi)", "")
+        clean_label = clean_label.replace(";", ",")
+        clean_label = clean_label.strip()
+
+        # materiality test
+        is_material = False
+        if pop_val_num:
+            pct = (val_num / pop_val_num) * 100.0
+            if pct >= 1.0:
+                is_material = True
+        else:
+            if val_num >= 50:
+                is_material = True
+
+        if is_material:
+            significant.append(clean_label)
+
+    # dedupe while preserving order
+    seen = set()
+    ordered_unique = []
+    for lang in significant:
+        base = lang.strip()
+        if base not in seen:
+            seen.add(base)
+            ordered_unique.append(base)
+
+    return ordered_unique
+
+def extract_indigenous_nations(df, geo_col):
+    """
+    Look inside Indigenous-related topics and try to identify which
+    nations / identities appear in non-trivial numbers.
+
+    We'll look for labels like:
+    - Cree
+    - Dene
+    - Blackfoot
+    - Stoney
+    - Saulteaux / Anishinaabe variants
+    - Métis
+    - Inuit
+
+    We'll filter out generic totals and zero/blank rows.
+    We don't currently force a % threshold because sometimes those counts are smaller
+    but still culturally important; instead we'll require val_num >= 20 for now.
+    You can adjust that threshold.
+    """
+
+    INDIG_TOPIC_REGEX = "Indigenous population|Indigenous ancestry|Indigenous identity"
+    possible_markers = [
+        "cree",
+        "dene",
+        "blackfoot",
+        "stoney",
+        "saulteaux",
+        "anishinaabe",
+        "ojibwe",  # just in case
+        "Métis".lower(),
+        "metis",   # accent-safe
+        "inuit",
+        "first nations",
+        "north american indian",
+    ]
+
+    sub = df[df["Topic"].str.contains(INDIG_TOPIC_REGEX, case=False, na=False)].copy()
+
+    found_groups = []
+
+    for _, r in sub.iterrows():
+        label = str(r["Characteristic"]).strip()
+        val_num = _coerce_number(r[geo_col])
+        if val_num is None or val_num <= 0:
+            continue
+
+        lower_label = label.lower()
+
+        # skip rows that are clearly just overall totals
+        if "total" in lower_label and "aboriginal" in lower_label:
+            continue
+        if "total" in lower_label and "indigenous" in lower_label:
+            continue
+        if "total" == lower_label.strip():
+            continue
+
+        # try to detect explicit nations / peoples
+        hit_any = False
+        for marker in possible_markers:
+            if marker in lower_label:
+                hit_any = True
+                break
+
+        if hit_any:
+            # simplify label for readability
+            clean_label = (
+                label.replace("First Nations (North American Indian)", "First Nations")
+                     .replace("Cree First Nations", "Cree")
+                     .replace("Cree nations", "Cree")
+                     .replace("Dene First Nations", "Dene")
+                     .replace("Blackfoot First Nations", "Blackfoot")
+                     .replace("Métis", "Métis")
+                     .replace("Metis", "Métis")
+                     .replace("Inuit", "Inuit")
+            )
+            clean_label = clean_label.strip()
+            # If StatCan phrases it "Cree First Nations individuals", we just want "Cree"
+            # quick trim:
+            for word in ["First Nations individuals", "First Nations persons", "First Nations people"]:
+                clean_label = clean_label.replace(word, "")
+            clean_label = clean_label.strip()
+            found_groups.append(clean_label)
+
+    # Deduplicate, keep order
+    seen = set()
+    ordered_unique = []
+    for grp in found_groups:
+        base = grp.strip()
+        if base not in seen:
+            seen.add(base)
+            ordered_unique.append(base)
+
+    return ordered_unique
+
 def generate_summary(df: pd.DataFrame) -> str:
-    """
-    Create a narrative summary of the community using the filtered dataframe.
-    We try to:
-    - Estimate total population
-    - Estimate children (0–14) and seniors (65+)
-    - Identify Indigenous presence
-    - Identify newcomer / immigrant presence
-    - Identify language profile
-    - Flag low income / affordability concerns
-    - Flag recent movers / commuting patterns
-
-    We avoid obviously junk data and skip items with no signal.
-    """
-
     if df.empty:
         return "No summary available."
 
@@ -267,194 +457,205 @@ def generate_summary(df: pd.DataFrame) -> str:
 
     lines = []
 
-    # -------------------------------------------------
-    # Population base
-    # -------------------------------------------------
+    # --- Population (for % math later) ---
     pop_rows = df[
         (df["Topic"].str.contains("Population and dwellings", case=False, na=False)) &
         (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
     ]
     pop_val_num = None
     if not pop_rows.empty:
-        pop_val_raw = pop_rows.iloc[0][geo_col]
-        pop_val_num = _coerce_number(pop_val_raw)
+        pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col])
         if pop_val_num and pop_val_num > 0:
             lines.append(
-                f"The community has approximately {int(round(pop_val_num, 0))} residents."
+                f"This community has approximately {int(round(pop_val_num, 0))} residents."
             )
 
-    # -------------------------------------------------
-    # Age: children and seniors
-    # -------------------------------------------------
-    kids_rows = df[
-        (df["Topic"].str.contains("Age characteristics", case=False, na=False)) &
-        (df["Characteristic"].str.contains("0 to 14 years", case=False, na=False))
-    ]
-    seniors_rows = df[
-        (df["Topic"].str.contains("Age characteristics", case=False, na=False)) &
-        (df["Characteristic"].str.contains("65 years", case=False, na=False))
-    ]
+    # --- Age structure ---
+    kids_val = _best_numeric_from(
+        df,
+        topic_regex="Age characteristics",
+        char_regex=r"\b0\s*to\s*14\s*years\b",
+        geo_col=geo_col,
+    )
+    seniors_val = _best_numeric_from(
+        df,
+        topic_regex="Age characteristics",
+        char_regex=r"65\s*years",
+        geo_col=geo_col,
+    )
 
-    kids_phrase = None
-    seniors_phrase = None
-
-    kids_val_num = None
-    seniors_val_num = None
     kids_pct = None
     seniors_pct = None
-
-    if not kids_rows.empty:
-        kids_val_num = _coerce_number(kids_rows.iloc[0][geo_col])
-    if not seniors_rows.empty:
-        seniors_val_num = _coerce_number(seniors_rows.iloc[0][geo_col])
-
-    # calculate % if we have total pop
     if pop_val_num and pop_val_num > 0:
-        if kids_val_num and kids_val_num > 0 and kids_val_num < pop_val_num:
-            kids_pct = (kids_val_num / pop_val_num) * 100.0
-        if seniors_val_num and seniors_val_num > 0 and seniors_val_num < pop_val_num:
-            seniors_pct = (seniors_val_num / pop_val_num) * 100.0
+        if kids_val and kids_val > 0 and kids_val < pop_val_num:
+            kids_pct = (kids_val / pop_val_num) * 100.0
+        if seniors_val and seniors_val > 0 and seniors_val < pop_val_num:
+            seniors_pct = (seniors_val / seniors_val if seniors_val == pop_val_num else seniors_val / pop_val_num) * 100.0
 
-    # craft kid sentence
+    age_bits = []
     if kids_pct and kids_pct >= 1.0:
-        kids_phrase = f"Children (0–14) are about {kids_pct:.1f}% of the population"
-    elif kids_val_num and kids_val_num > 0:
-        kids_phrase = "There is a meaningful number of children (ages 0–14)"
+        age_bits.append(f"Children (0–14) are about {kids_pct:.1f}% of the population")
+    elif kids_val and kids_val > 0:
+        age_bits.append("There is a meaningful number of children (0–14)")
 
-    # craft seniors sentence
     if seniors_pct and seniors_pct >= 1.0:
-        seniors_phrase = f"older adults (65+) are about {seniors_pct:.1f}%"
-    elif seniors_val_num and seniors_val_num > 0:
-        seniors_phrase = "there is also a visible older adult population (65+)"
+        age_bits.append(f"older adults (65+) are about {seniors_pct:.1f}%")
+    elif seniors_val and seniors_val > 0:
+        age_bits.append("there is also a visible older adult population (65+)")
 
-    if kids_phrase and seniors_phrase:
-        lines.append(
-            f"{kids_phrase}, and {seniors_phrase}. This mix suggests demand for both youth programming and family supports."
-        )
-    elif kids_phrase:
-        lines.append(
-            f"{kids_phrase}. This suggests a strong need for youth- and family-focused programs."
-        )
-    elif seniors_phrase:
-        lines.append(
-            f"{seniors_phrase}, indicating aging-related services may matter locally."
-        )
-
-    # -------------------------------------------------
-    # Indigenous presence
-    # -------------------------------------------------
-    indig_rows = df[
-        df["Topic"].str.contains("Indigenous population|Indigenous ancestry", case=False, na=False)
-    ]
-    indigenous_flag = False
-    if not indig_rows.empty:
-        # we don't know which row is "Total Indigenous identity", so take first nonzero
-        for _, r in indig_rows.iterrows():
-            cand = _coerce_number(r[geo_col])
-            if cand and cand > 0:
-                indigenous_flag = True
-                break
-    if indigenous_flag:
-        lines.append(
-            "There is an Indigenous community presence that should be reflected in program design, partnerships, and outreach."
-        )
-
-    # -------------------------------------------------
-    # Immigration / newcomers
-    # -------------------------------------------------
-    imm_rows = df[
-        df["Topic"].str.contains("Immigrant status and period of immigration", case=False, na=False)
-        | df["Topic"].str.contains("Selected places of birth for the recent immigrant population",
-                                   case=False, na=False)
-    ]
-    newcomer_flag = False
-    for _, r in imm_rows.iterrows():
-        cand = _coerce_number(r[geo_col])
-        if cand and cand > 0:
-            newcomer_flag = True
-            break
-    if newcomer_flag:
-        lines.append(
-            "There is a notable newcomer / recent immigrant population, pointing to the importance of culturally responsive communication with parents and caregivers."
-        )
-
-    # -------------------------------------------------
-    # Language profile
-    # -------------------------------------------------
-    lang_rows = df[
-        df["Topic"].str.contains(
-            "Mother tongue|Language spoken most often at home|Knowledge of official languages|First official language spoken",
-            case=False,
-            na=False,
-        )
-    ]
-
-    english_only_flag = False
-    french_presence_flag = False
-    other_lang_flag = False
-
-    for _, r in lang_rows.iterrows():
-        char_lower = r["Characteristic"].lower()
-        val_num = _coerce_number(r[geo_col])
-        if not val_num or val_num <= 0:
-            continue
-
-        if "english only" in char_lower:
-            english_only_flag = True
-        if "french" in char_lower and "only" in char_lower:
-            french_presence_flag = True
-        # "neither English nor French" or "most often at home" with other languages
-        if "neither english nor french" in char_lower:
-            other_lang_flag = True
-        if ("most often at home" in char_lower and
-            "english" not in char_lower and
-            "french" not in char_lower):
-            other_lang_flag = True
-
-    lang_bits = []
-    if english_only_flag:
-        lang_bits.append("English is dominant")
-    if french_presence_flag:
-        lang_bits.append("French is present")
-    if other_lang_flag:
-        lang_bits.append("other home languages are actively spoken")
-
-    if lang_bits:
-        # join with commas and "and"
-        if len(lang_bits) == 1:
-            lang_sentence = lang_bits[0] + "."
-        elif len(lang_bits) == 2:
-            lang_sentence = f"{lang_bits[0]} and {lang_bits[1]}."
+    if age_bits:
+        if len(age_bits) == 2:
+            lines.append(
+                f"{age_bits[0]}, and {age_bits[1]}. This shapes demand for youth programs, family supports, and age-appropriate services."
+            )
         else:
-            lang_sentence = (
-                f"{', '.join(lang_bits[:-1])}, and {lang_bits[-1]}."
+            lines.append(
+                f"{age_bits[0]}. This shapes demand for family supports, school-age programming, and community services."
             )
 
+    # --- Household structure ---
+    single_parent_share = _best_numeric_from(
+        df,
+        topic_regex="Household type|Household and dwelling characteristics",
+        char_regex="one-parent|single-parent",
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+    hh_size = _best_numeric_from(
+        df,
+        topic_regex="Household and dwelling characteristics",
+        char_regex="Average household size",
+        geo_col=geo_col,
+    )
+    renters_share = _best_numeric_from(
+        df,
+        topic_regex="Household and dwelling characteristics|Household type",
+        char_regex="rented",
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+    owners_share = _best_numeric_from(
+        df,
+        topic_regex="Household and dwelling characteristics|Household type",
+        char_regex="owned",
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+
+    household_bits = []
+    if single_parent_share:
+        household_bits.append("There is a notable share of one-parent households, meaning many caregivers are doing this on their own.")
+    if hh_size and hh_size >= 2.5:
+        household_bits.append(f"Average household size is about {hh_size:.1f} people, suggesting many multi-child or multi-generational homes.")
+    if renters_share and (not owners_share or renters_share > owners_share):
+        household_bits.append("Housing leans toward renting, which can mean less stability and more turnover.")
+    elif owners_share and owners_share >= 1.0:
+        household_bits.append("Most homes appear to be owner-occupied, which often signals longer-term roots in the area.")
+
+    if household_bits:
+        lines.append(" ".join(household_bits))
+
+    # --- Indigenous nations / identities ---
+    nations = extract_indigenous_nations(df, geo_col)
+    if nations:
+        if len(nations) == 1:
+            lines.append(
+                f"There is an Indigenous community presence, including {nations[0]}, which should shape how programs are offered, led, and communicated."
+            )
+        else:
+            nation_list_text = ", ".join(nations[:-1]) + f", and {nations[-1]}"
+            lines.append(
+                f"There is an Indigenous community presence, including {nation_list_text}, which should shape how programs are offered, led, and communicated."
+            )
+
+    # --- Newcomers / immigration ---
+    newcomer_val = _best_numeric_from(
+        df,
+        topic_regex="Immigrant status and period of immigration|Selected places of birth for the recent immigrant population",
+        char_regex=None,
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+    if newcomer_val:
         lines.append(
-            "Languages: " + lang_sentence + " This has direct implications for outreach, signage, and parent communication."
+            "There is a visible newcomer / recent immigrant population. Cultural responsiveness, translation support, and parent-facing communication will matter."
         )
 
-    # -------------------------------------------------
-    # Income / affordability
-    # -------------------------------------------------
-    low_income_rows = df[
-        df["Topic"].str.contains("Low income and income inequality", case=False, na=False)
-    ]
-    low_income_flag = False
-    if not low_income_rows.empty:
-        for _, r in low_income_rows.iterrows():
-            v = _coerce_number(r[geo_col])
-            if v and v > 0:
-                low_income_flag = True
-                break
-    if low_income_flag:
-        lines.append(
-            "Affordability is a factor: some households are experiencing low income or income inequality. Subsidies or free access will matter."
+    # --- Language landscape, including specific home languages ---
+    specific_langs = extract_significant_languages(df, geo_col, pop_val_num)
+    minority_lang_val = _best_numeric_from(
+        df,
+        topic_regex="Children eligible for instruction in the minority official language|Eligibility and instruction in the minority official language",
+        char_regex=None,
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+
+    lang_sentences = []
+    if specific_langs:
+        if len(specific_langs) == 1:
+            lang_sentences.append(f"Families speak {specific_langs[0]} at home in meaningful numbers.")
+        else:
+            lang_sentences.append(
+                "Families speak " +
+                ", ".join(specific_langs[:-1]) +
+                f", and {specific_langs[-1]} at home in meaningful numbers."
+            )
+
+    if minority_lang_val:
+        lang_sentences.append(
+            "Some children are legally entitled to Francophone minority-language education."
         )
 
-    # -------------------------------------------------
-    # Mobility / churn
-    # -------------------------------------------------
+    if lang_sentences:
+        lines.append(
+            "Language and culture: " +
+            " ".join(lang_sentences) +
+            " This affects how outreach is delivered and which partners you engage."
+        )
+
+    # --- Education level ---
+    hs_val = _best_numeric_from(
+        df,
+        topic_regex="Secondary \\(high\\) school diploma|Highest certificate, diploma or degree",
+        char_regex="high school diploma|secondary",
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+    uni_val = _best_numeric_from(
+        df,
+        topic_regex="Highest certificate, diploma or degree",
+        char_regex="bachelor|university|degree",
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+    if hs_val and uni_val:
+        lines.append(
+            "Education levels are mixed: many adults report high school or trades credentials, and there is also a group with university-level education."
+        )
+    elif hs_val and not uni_val:
+        lines.append(
+            "Most adults appear to hold high school or trades-level credentials rather than university degrees."
+        )
+    elif uni_val and not hs_val:
+        lines.append(
+            "A significant share of adults report university-level credentials."
+        )
+
+    # --- Low income / affordability ---
+    low_income_val = _best_numeric_from(
+        df,
+        topic_regex="Low income and income inequality",
+        char_regex=None,
+        geo_col=geo_col,
+        min_pct=1.0,
+    )
+    if low_income_val:
+        lines.append(
+            "Affordability is a real factor: some households are living with low income or inequality, so cost can be a barrier without subsidy."
+        )
+
+    # --- Mobility / rootedness ---
     mobility_rows = df[
         df["Topic"].str.contains("Mobility status 1 year ago|Mobility status 5 years ago",
                                  case=False, na=False)
@@ -463,17 +664,15 @@ def generate_summary(df: pd.DataFrame) -> str:
     for _, r in mobility_rows.iterrows():
         row_char = r["Characteristic"].lower()
         mv = _coerce_number(r[geo_col])
-        if (("moved" in row_char) or ("different" in row_char)) and mv and mv > 0:
+        if mv and mv > 0 and ("moved" in row_char or "different" in row_char):
             mobility_flag = True
             break
     if mobility_flag:
         lines.append(
-            "There is recent movement in and out of the area, which means some families may still be building local support networks."
+            "Families are still moving in and settling, which means not everyone has long-standing local supports yet."
         )
 
-    # -------------------------------------------------
-    # Commuting
-    # -------------------------------------------------
+    # --- Commuting / time pressure ---
     commute_rows = df[
         df["Topic"].str.contains("Main mode of commuting|Commuting duration", case=False, na=False)
     ]
@@ -488,32 +687,23 @@ def generate_summary(df: pd.DataFrame) -> str:
             long_commute_flag = True
         if "car" in row_char or "automobile" in row_char or "driver" in row_char:
             car_commute_flag = True
-
-    commute_bits = []
-    if car_commute_flag:
-        commute_bits.append("Most working adults rely on driving")
-    if long_commute_flag:
-        commute_bits.append("some are commuting long distances daily")
-
-    if commute_bits:
+    if car_commute_flag or long_commute_flag:
+        commute_bits = []
+        if car_commute_flag:
+            commute_bits.append("most working adults rely on driving")
+        if long_commute_flag:
+            commute_bits.append("some families are dealing with long daily commutes")
         if len(commute_bits) == 2:
             commute_sentence = commute_bits[0] + ", and " + commute_bits[1] + "."
         else:
             commute_sentence = commute_bits[0] + "."
         lines.append(
-            commute_sentence + " This affects after-school timing and evening availability."
+            commute_sentence + " This shapes after-school timing, pickup logistics, and evening availability for programs."
         )
 
-    # -------------------------------------------------
-    # Final assembly
-    # -------------------------------------------------
     if not lines:
-        return (
-            "This community profile does not surface notable demographic features "
-            "from the selected census fields."
-        )
+        return "This community profile did not surface notable demographic features from the selected census fields."
 
-    # Join everything into one readable paragraph
     return " ".join(lines)
 
 # ------------------------------------------------
