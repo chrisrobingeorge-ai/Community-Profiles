@@ -23,4 +23,3 @@ def test_status_coverage_runs():
     status_df, coverage = gather_column_status(df, mapping)
     assert "section" in status_df.columns
     assert coverage >= 0
-``
