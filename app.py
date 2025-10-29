@@ -99,14 +99,6 @@ def load_statcan_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
     return df
 
 def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Keep any row where:
-    - Topic is exactly one of the selected sections
-      (case-insensitive match)
-    OR
-    - Characteristic contains one of our keyword phrases.
-    """
-
     if "Topic" not in df.columns or "Characteristic" not in df.columns:
         st.error(
             "This file doesn't look like the standard Census Profile format. "
@@ -114,8 +106,11 @@ def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
         )
         return pd.DataFrame()
 
-    # match on Topic (case-insensitive equality)
-    topic_mask = df["Topic"].str.lower().isin([t.lower() for t in TARGET_TOPICS])
+    # Normalize topics so '200: Main mode of commuting ...' becomes a real topic label
+    df = resolve_topic_column(df)
+
+    # match on normalized topic (case-insensitive equality)
+    topic_mask = df["Topic_norm"].str.lower().isin([t.lower() for t in TARGET_TOPICS])
 
     # match on Characteristic (case-insensitive substring)
     char_mask = False
@@ -129,7 +124,7 @@ def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
 
     # sort nicely for display
     filtered.sort_values(
-        by=["Topic", "Characteristic"],
+        by=["Topic_norm", "Characteristic"],
         inplace=True,
         ignore_index=True,
     )
@@ -145,9 +140,11 @@ def render_report(df: pd.DataFrame):
         st.warning("No matching rows found in this CSV for the selected fields.")
         return
 
-    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic")]
+    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Topic_norm")]
 
-    for topic, sub in df.groupby("Topic", dropna=False):
+    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
+
+    for topic, sub in df.groupby(topic_col, dropna=False):
         with st.expander(f"📂 {topic}", expanded=True):
             pretty = sub[["Characteristic"] + value_cols].reset_index(drop=True)
             st.dataframe(pretty, use_container_width=True)
@@ -957,6 +954,87 @@ def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     df2 = df2.drop(columns=dup_like, errors="ignore")
 
     return df2
+
+import re
+
+def resolve_topic_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create Topic_norm by:
+    - Using Topic when it looks like a proper label (not just '200', '201', empty).
+    - Promoting Characteristic lines like '200: Main mode of commuting ...' to become the current topic label.
+    - Forward-filling that topic until the next header.
+    Also drops pure description header rows (e.g., lines whose Characteristic is the long sentence that
+    'refers to ...' and have no data).
+    """
+    if df.empty:
+        df["Topic_norm"] = df.get("Topic", "")
+        return df
+
+    df = df.copy()
+
+    # Start Topic_norm as Topic (string)
+    df["Topic_norm"] = df.get("Topic", "").astype(str).str.strip()
+
+    current_topic = None
+
+    rows_to_drop = []
+
+    # Identify numeric-only Topic entries (e.g., '200', '201')
+    def looks_numeric_topic(t: str) -> bool:
+        t = (t or "").strip()
+        return bool(re.fullmatch(r"\d{1,3}", t))
+
+    # Loop rows to detect header lines in Characteristic like "200: Main mode of commuting ..."
+    for idx, row in df.iterrows():
+        topic = str(row.get("Topic", "")).strip()
+        char  = str(row.get("Characteristic", "")).strip()
+
+        # Case A: a proper Topic string already present and not numeric-only
+        if topic and not looks_numeric_topic(topic) and topic.lower() not in ["topic", ""]:
+            current_topic = topic
+            df.at[idx, "Topic_norm"] = current_topic
+            continue
+
+        # Case B: Characteristic contains a "###: Title" header → promote to topic
+        m = re.match(r"^\s*(\d{1,3})\s*:\s*(.+)$", char)
+        if m:
+            # Use the text after the colon as the topic label (strip any trailing 'refers to...' sentence)
+            label = m.group(2).strip()
+            # If label has a long description (e.g., '... refers to ...'), keep the part before 'refers to'
+            label = re.split(r"\s+refers to\s+", label, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+            current_topic = label if label else char
+            df.at[idx, "Topic_norm"] = current_topic
+
+            # If this is just the header/description row (no data), mark to drop later
+            # Detect "refers to" header rows or rows where all value columns are empty/placeholders
+            value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")]
+            maybe_desc = ("refers to" in char.lower())
+            if maybe_desc:
+                rows_to_drop.append(idx)
+            else:
+                # also drop if all value cells are empty/placeholder
+                placeholders = {"", "..", "...", "F", "X"}
+                col_vals = []
+                for c in value_cols:
+                    v = df.at[idx, c] if c in df.columns else None
+                    s = "" if pd.isna(v) else str(v).strip()
+                    col_vals.append(s)
+                if all((v == "" or v.upper() in placeholders) for v in col_vals):
+                    rows_to_drop.append(idx)
+            continue
+
+        # Case C: no good Topic; carry forward the last known topic
+        if current_topic:
+            df.at[idx, "Topic_norm"] = current_topic
+        else:
+            # fallback: keep whatever Topic had (possibly numeric) so downstream still has something
+            df.at[idx, "Topic_norm"] = topic
+
+    # Drop the header/description rows we flagged
+    if rows_to_drop:
+        df = df.drop(index=rows_to_drop)
+
+    return df
 
 # ------------------------------------------------
 # UI
