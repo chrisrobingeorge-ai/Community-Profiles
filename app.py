@@ -72,14 +72,19 @@ def load_statcan_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
     - One or more geography columns (Cypress, Taber MD, etc.)
     """
 
-    df = pd.read_csv(uploaded_file)
+    # Try UTF-8 first. If that fails, fall back to latin1 (common for StatCan downloads)
+    try:
+        df = pd.read_csv(uploaded_file, encoding="utf-8")
+    except UnicodeDecodeError:
+        uploaded_file.seek(0)  # rewind file handle before retry
+        df = pd.read_csv(uploaded_file, encoding="latin1")
 
     # normalize headers
     df.columns = [str(c).strip() for c in df.columns]
 
     # normalize key text columns if present
     if "Topic" in df.columns:
-        df["Topic"] = df["Topic"].astype(str).strip()
+        df["Topic"] = df["Topic"].astype(str).str.strip()
     if "Characteristic" in df.columns:
         df["Characteristic"] = df["Characteristic"].astype(str).str.strip()
 
@@ -91,7 +96,6 @@ def load_statcan_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
         df = df[df["Topic"] != "Topic"]
 
     return df
-
 
 def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
