@@ -545,11 +545,11 @@ def generate_summary(df: pd.DataFrame) -> str:
     if age_bits:
         if len(age_bits) == 2:
             lines.append(
-                f"{age_bits[0]}, and {age_bits[1]}. This shapes demand for youth programs, family supports, and age-appropriate services."
+                f"{age_bits[0]}, and {age_bits[1]}. We should expect to serve a lot of school-age kids and also grandparents / older caregivers in the same community spaces."
             )
         else:
             lines.append(
-                f"{age_bits[0]}. This shapes demand for family supports, school-age programming, and community services."
+                f"{age_bits[0]}. We should expect to serve a large number of school-age kids in this community."
             )
 
     # --- Household structure ---
@@ -581,30 +581,51 @@ def generate_summary(df: pd.DataFrame) -> str:
         min_pct=1.0,
     )
 
-    household_bits = []
-    if single_parent_share:
-        household_bits.append("There is a notable share of one-parent households, meaning many caregivers are doing this on their own.")
-    if hh_size and hh_size >= 2.5:
-        household_bits.append(f"Average household size is about {hh_size:.1f} people, suggesting many multi-child or multi-generational homes.")
-    if renters_share and (not owners_share or renters_share > owners_share):
-        household_bits.append("Housing leans toward renting, which can mean less stability and more turnover.")
-    elif owners_share and owners_share >= 1.0:
-        household_bits.append("Most homes appear to be owner-occupied, which often signals longer-term roots in the area.")
+    household_barrier_lines = []
 
-    if household_bits:
-        lines.append(" ".join(household_bits))
+    # Single parent load
+    if single_parent_share:
+        household_barrier_lines.append(
+            "There is a notable share of one-parent households, meaning many caregivers are doing this alone."
+        )
+    
+    # Household size as signal of multiple kids / multigen
+    if hh_size and hh_size >= 2.5:
+        household_barrier_lines.append(
+            f"Average household size is about {hh_size:.1f} people, so programming should assume multiple kids per family and sometimes multigenerational households."
+        )
+    
+    # Housing stability / renting
+    if renters_share and (not owners_share or renters_share > owners_share):
+        household_barrier_lines.append(
+            "Housing leans toward renting, which usually means less stability and more moves."
+        )
+    elif owners_share and owners_share >= 1.0:
+        household_barrier_lines.append(
+            "Most homes appear to be owner-occupied, which suggests some families are rooted here long-term."
+        )
+    
+    # Income pressure
+    if low_income_val:
+        household_barrier_lines.append(
+            "Income data suggests affordability will be a barrier. Families report program fees, gear, and travel costs as major blockers, especially outside big cities. We should plan for low- or no-cost access, not assume families can pay."
+        )
+    
+    if household_barrier_lines:
+        lines.append(" ".join(household_barrier_lines))
+
 
     # --- Indigenous nations / identities ---
     nations = extract_indigenous_nations(df, geo_col)
     if nations:
         if len(nations) == 1:
             lines.append(
-                f"There is an Indigenous community presence, including {nations[0]}, which should shape how programs are offered, led, and communicated."
+                f"Indigenous presence: {nations[0]} is present in meaningful numbers. Programming should be coordinated with local Indigenous leadership and should expect Indigenous youth participation."
             )
         else:
             nation_list_text = ", ".join(nations[:-1]) + f", and {nations[-1]}"
             lines.append(
-                f"There is an Indigenous community presence, including {nation_list_text}, which should shape how programs are offered, led, and communicated."
+                f"Indigenous presence: {nation_list_text} are present in meaningful numbers. Programming should be coordinated with local Indigenous leadership and should expect Indigenous youth participation."
             )
 
     # --- Newcomers / immigration ---
@@ -633,25 +654,28 @@ def generate_summary(df: pd.DataFrame) -> str:
     lang_sentences = []
     if specific_langs:
         if len(specific_langs) == 1:
-            lang_sentences.append(f"Families speak {specific_langs[0]} at home in meaningful numbers.")
+            lang_sentences.append(
+                f"Families speak {specific_langs[0]} at home in meaningful numbers. Outreach and parent communication may need to happen in that language, not just English."
+            )
         else:
             lang_sentences.append(
                 "Families speak " +
                 ", ".join(specific_langs[:-1]) +
-                f", and {specific_langs[-1]} at home in meaningful numbers."
+                f", and {specific_langs[-1]} at home in meaningful numbers. Outreach and parent communication may need to include these languages, not just English."
             )
-
+    
+    if newcomer_val:
+        lang_sentences.append(
+            "There is a visible newcomer / recent immigrant population. Trust-building may require connectors who already work with these families (schools, settlement services, cultural associations)."
+        )
+    
     if minority_lang_val:
         lang_sentences.append(
-            "Some children are legally entitled to Francophone minority-language education."
+            "Some children here are legally entitled to minority-language (Francophone) education, so French-language access is part of the expectations."
         )
-
+    
     if lang_sentences:
-        lines.append(
-            "Language and culture: " +
-            " ".join(lang_sentences) +
-            " This affects how outreach is delivered and which partners you engage."
-        )
+        lines.append(" ".join(lang_sentences))
 
     # --- Education level ---
     hs_val = _best_numeric_from(
@@ -727,21 +751,30 @@ def generate_summary(df: pd.DataFrame) -> str:
         if "car" in row_char or "automobile" in row_char or "driver" in row_char:
             car_commute_flag = True
     if car_commute_flag or long_commute_flag:
-        commute_bits = []
-        if car_commute_flag:
-            commute_bits.append("most working adults rely on driving")
-        if long_commute_flag:
-            commute_bits.append("some families are dealing with long daily commutes")
-        if len(commute_bits) == 2:
-            commute_sentence = commute_bits[0] + ", and " + commute_bits[1] + "."
+        if car_commute_flag and long_commute_flag:
+            commute_sentence = (
+                "Most working adults rely on driving, and some families are already doing long daily commutes."
+            )
+        elif car_commute_flag:
+            commute_sentence = (
+                "Most working adults rely on driving."
+            )
         else:
-            commute_sentence = commute_bits[0] + "."
+            commute_sentence = (
+                "Some families are already doing long daily commutes."
+            )
+    
         lines.append(
-            commute_sentence + " This shapes after-school timing, pickup logistics, and evening availability for programs."
+            commute_sentence +
+            " Programs should run locally (school / community space) right after school or early evening, because asking families to add more travel time is unrealistic."
         )
 
     if not lines:
         return "This community profile did not surface notable demographic features from the selected census fields."
+
+    lines.append(
+        "Operational takeaway: deliver programming in-town, keep cost as close to zero as possible, partner with local schools and Indigenous leadership early, and assume multi-language parent communication may be necessary."
+    )
 
     return " ".join(lines)
 
