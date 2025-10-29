@@ -884,6 +884,80 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
     # Join into one readable paragraph
     return " ".join(lines)
 
+import re
+
+def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove low-value metadata columns and empty columns, while keeping Topic/Characteristic
+    and any geography/value columns.
+
+    Rules:
+    - Drop columns whose name matches common flag/metadata patterns (case-insensitive):
+      endswith '_flag', contains 'flag', 'symbol', 'note', 'quality', 'status'
+    - Drop exact duplicates created by CSV tools (e.g., '.1', '.2' suffixes) *if* the
+      base column also exists and the duplicate is entirely empty or identical.
+    - Drop columns that are completely empty or only contain placeholders ('..', '...', 'F', 'X', '').
+    """
+
+    if df.empty:
+        return df
+
+    KEEP_ALWAYS = {"Topic", "Characteristic"}
+
+    # 1) Drop obvious flag/metadata columns by name
+    flag_like = []
+    for c in df.columns:
+        cl = c.lower()
+        if c in KEEP_ALWAYS:
+            continue
+        if (
+            cl.endswith("_flag")
+            or "flag" in cl
+            or "symbol" in cl
+            or (cl.startswith("note") or cl == "note" or "notes" in cl)
+            or "quality" in cl
+            or "status" in cl
+        ):
+            flag_like.append(c)
+
+    df2 = df.drop(columns=flag_like, errors="ignore")
+
+    # 2) Remove fully empty / placeholder-only columns (except KEEP_ALWAYS)
+    PLACEHOLDERS = {"", "..", "...", "f", "x"}
+    drop_empty = []
+    for c in df2.columns:
+        if c in KEEP_ALWAYS:
+            continue
+        col = df2[c]
+        # Treat as string for placeholder check
+        as_str = col.astype(str).str.strip().str.lower()
+        # Consider NaN or placeholder as "empty"
+        empties = as_str.isna() | as_str.isin(PLACEHOLDERS)
+        if empties.all():
+            drop_empty.append(c)
+    df2 = df2.drop(columns=drop_empty, errors="ignore")
+
+    # 3) Drop duplicate-suffix columns like '.1', '.2' when base exists and dup is empty/identical
+    #    e.g., 'Total_Flag.1' next to 'Total_Flag'
+    dup_like = []
+    for c in df2.columns:
+        m = re.match(r"^(.*)\.(\d+)$", c)
+        if not m:
+            continue
+        base = m.group(1)
+        if base in df2.columns:
+            # drop the suffixed one if it's identical or empty
+            if df2[c].equals(df2[base]):
+                dup_like.append(c)
+            else:
+                # If it's just empty/placeholder, drop
+                as_str = df2[c].astype(str).str.strip().str.lower()
+                if as_str.isin(PLACEHOLDERS).all():
+                    dup_like.append(c)
+    df2 = df2.drop(columns=dup_like, errors="ignore")
+
+    return df2
+
 # ------------------------------------------------
 # UI
 # ------------------------------------------------
@@ -900,6 +974,7 @@ else:
     # 1) Load + filter
     raw_df = load_statcan_csv(uploaded_file)
     cleaned_df = filter_relevant_rows(raw_df)
+    cleaned_df = prune_columns(cleaned_df)   # <— remove Flag/Symbol/Note/empty/dup columns
 
     # 2) Sidebar controls (age-to-date)
     with st.sidebar:
