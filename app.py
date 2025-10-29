@@ -916,35 +916,35 @@ summary_text = generate_summary(
 )
 st.write(summary_text)
     
-    # NEW: Summary
-    st.subheader("Community Profile Summary")
-    summary_text = generate_summary(cleaned_df)
-    st.write(summary_text)
+# NEW: Summary
+st.subheader("Community Profile Summary")
+summary_text = generate_summary(cleaned_df)
+st.write(summary_text)
 
-    # Existing table view
-    st.subheader("Filtered Report")
-    render_report(cleaned_df)
+# Existing table view
+st.subheader("Filtered Report")
+render_report(cleaned_df)
 
-    # Existing export section
-    st.subheader("Export")
-    col1, col2 = st.columns(2)
-    with col1:
-        csv_bytes = build_filtered_csv(cleaned_df)
-        st.download_button(
-            label="⬇️ Download filtered CSV",
-            data=csv_bytes,
-            file_name="community_profile_filtered.csv",
-            mime="text/csv",
-        )
-    with col2:
-        html_str = build_printable_html(cleaned_df)
-        html_bytes = html_str.encode("utf-8")
-        st.download_button(
-            label="⬇️ Download printable report (HTML)",
-            data=html_bytes,
-            file_name="community_profile_report.html",
-            mime="text/html",
-        )
+# Existing export section
+st.subheader("Export")
+col1, col2 = st.columns(2)
+with col1:
+    csv_bytes = build_filtered_csv(cleaned_df)
+    st.download_button(
+        label="⬇️ Download filtered CSV",
+        data=csv_bytes,
+        file_name="community_profile_filtered.csv",
+        mime="text/csv",
+    )
+with col2:
+    html_str = build_printable_html(cleaned_df)
+    html_bytes = html_str.encode("utf-8")
+    st.download_button(
+        label="⬇️ Download printable report (HTML)",
+        data=html_bytes,
+        file_name="community_profile_report.html",
+        mime="text/html",
+    )
 
 st.markdown(
     """
