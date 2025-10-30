@@ -1,7 +1,11 @@
 import io
+import os
+import re
+from collections import OrderedDict
+from datetime import date, datetime
+
 import pandas as pd
 import streamlit as st
-from datetime import date
 
 # ------------------------------------------------
 # Streamlit page config
@@ -83,7 +87,6 @@ def load_statcan_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
 
     return df
 
-import re
 
 def _characteristic_sort_key(label: str) -> tuple:
     """
@@ -117,29 +120,22 @@ def _characteristic_sort_key(label: str) -> tuple:
             n1_raw = m.group(1)
             n1 = int(n1_raw.replace(",", "")) if n1_raw else 0
 
-            # Try the second number if exists
+            # Default n2 = n1
             n2 = n1
-            if len(m.groups()) >= 2:
-                g2 = m.group(2)
-                # "to $9,999" case → g2 will be like "9,999"
-                if g2 and "to" not in patt and "and over" not in g2.lower():
-                    # we won't actually hit this branch because of the pattern grouping,
-                    # but leave it for safety
-                    pass
 
-            # For "to" pattern, group(2) is the upper bound
+            # "$5,000 to $9,999"
             m_to = re.match(r"^\$?([\d,]+)\s*to\s*\$?([\d,]+)", text, flags=re.IGNORECASE)
             if m_to:
                 n1 = int(m_to.group(1).replace(",", ""))
                 n2 = int(m_to.group(2).replace(",", ""))
 
-            # For "Under $5,000", treat range as (0 .. 5000)
+            # "Under $5,000" -> treat as (0 .. 5000)
             m_under = re.match(r"^under\s*\$?([\d,]+)", text, flags=re.IGNORECASE)
             if m_under:
                 n1 = 0
                 n2 = int(m_under.group(1).replace(",", ""))
 
-            # For "$200,000 and over", treat as (200000 .. inf)
+            # "$200,000 and over" -> (200000 .. inf)
             m_over = re.match(r"^\$?([\d,]+)\s*(and over|\+)", text, flags=re.IGNORECASE)
             if m_over:
                 n1 = int(m_over.group(1).replace(",", ""))
@@ -151,7 +147,6 @@ def _characteristic_sort_key(label: str) -> tuple:
     # Bucket: "Total - Income statistics ..." etc.
     if low.startswith("total -"):
         # group_rank 1 = totals block, comes after numeric ranges
-        # we still want a stable sort inside this group, so use `low`
         return (1, 0, 0, low)
 
     # Bucket: averages / medians
@@ -174,9 +169,105 @@ def _characteristic_sort_key(label: str) -> tuple:
         return (0, n, n + 1000, low)
 
     # ---------- 3) Fallback ----------
-    # If we get here, it's something like "Total population ..." or "Employed persons ..."
-    # Give it a later rank (1) so that numeric bands still sort first within that topic.
+    # Give it a later rank (1) so numeric bands still sort first.
     return (1, 9999998, 9999998, low)
+
+
+def resolve_topic_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Create Topic_norm by:
+    - Using Topic when it looks like a proper label (not just '200', '201', empty).
+    - Promoting Characteristic lines like '200: Main mode of commuting ...' to become the current topic label.
+    - Forward-filling that topic until the next header.
+    Also drops pure description header rows (e.g., lines whose Characteristic is the long sentence that
+    'refers to ...' and have no data).
+    """
+    if df.empty:
+        df["Topic_norm"] = df.get("Topic", "")
+        return df
+
+    df = df.copy()
+
+    # Drop any pure description rows like "Commuting duration refers to ..."
+    desc_mask = df["Characteristic"].str.contains(r"\brefers to\b", case=False, na=False)
+
+    # Keep only rows that have at least one non-empty numeric-ish value
+    value_cols_tmp = [
+        c for c in df.columns
+        if c not in ("Topic", "Characteristic", "Notes", "Note", "Symbol", "Flags", "Flag")
+    ]
+    has_data = df[value_cols_tmp].applymap(lambda x: str(x).strip()).apply(
+        lambda row: any(
+            v not in ["", "None", "nan", "NaN", "F", "X", "..", "..."] for v in row
+        ),
+        axis=1,
+    )
+    df = df[~(desc_mask & ~has_data)].copy()
+
+    # Start Topic_norm as Topic (string)
+    df["Topic_norm"] = df.get("Topic", "").astype(str).str.strip()
+
+    current_topic = None
+    rows_to_drop = []
+
+    # Identify numeric-only Topic entries (e.g., '200', '201')
+    def looks_numeric_topic(t: str) -> bool:
+        t = (t or "").strip()
+        return bool(re.fullmatch(r"\d{1,3}", t))
+
+    # Loop rows to detect header lines in Characteristic like "200: Main mode of commuting ..."
+    for idx, row in df.iterrows():
+        topic = str(row.get("Topic", "")).strip()
+        char = str(row.get("Characteristic", "")).strip()
+
+        # Case A: a proper Topic string already present and not numeric-only
+        if topic and not looks_numeric_topic(topic) and topic.lower() not in ["topic", ""]:
+            current_topic = topic
+            df.at[idx, "Topic_norm"] = current_topic
+            continue
+
+        # Case B: Characteristic contains a "###: Title" header → promote to topic
+        m = re.match(r"^\s*(\d{1,3})\s*:\s*(.+)$", char)
+        if m:
+            # Use the text after the colon as the topic label
+            label = m.group(2).strip()
+            # Trim off long descriptions after "refers to"
+            label = re.split(r"\s+refers to\s+", label, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+            current_topic = label if label else char
+            df.at[idx, "Topic_norm"] = current_topic
+
+            # Mark this row for dropping if it's really just a header/description
+            value_cols2 = [
+                c for c in df.columns
+                if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")
+            ]
+
+            maybe_desc = ("refers to" in char.lower())
+            if maybe_desc:
+                rows_to_drop.append(idx)
+            else:
+                # also drop if all value cells are empty/placeholders
+                placeholders = {"", "..", "...", "F", "X"}
+                col_vals = []
+                for c2 in value_cols2:
+                    v = df.at[idx, c2] if c2 in df.columns else None
+                    s = "" if pd.isna(v) else str(v).strip()
+                    col_vals.append(s)
+                if all((v2 == "" or v2.upper() in placeholders) for v2 in col_vals):
+                    rows_to_drop.append(idx)
+            continue
+
+        # Case C: no good Topic; carry forward the last known topic
+        if current_topic:
+            df.at[idx, "Topic_norm"] = current_topic
+        else:
+            df.at[idx, "Topic_norm"] = topic  # fallback
+
+    # Drop the header/description rows we flagged
+    if rows_to_drop:
+        df = df.drop(index=rows_to_drop)
+
+    return df
 
 
 def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -203,8 +294,7 @@ def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
     keep_mask = topic_mask | char_mask
     filtered = df[keep_mask].copy()
 
-    # sort nicely for display
-    # build a stable numeric-aware sort per Topic_norm
+    # numeric-aware sort within each topic
     filtered["__char_sort_key__"] = filtered["Characteristic"].apply(_characteristic_sort_key)
 
     filtered.sort_values(
@@ -219,10 +309,41 @@ def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
     return filtered
 
 
+def _coerce_number(val):
+    """
+    Try to turn a cell like '123', '12.3', '12.3 %', '0', '..', etc.
+    into a float. Return None if it's not usable.
+    """
+    if pd.isna(val):
+        return None
+    text = str(val).strip()
+    if text in ["", "..", "...", "F", "X"]:
+        return None
+    text = text.replace("%", "").replace(",", "")
+    try:
+        num = float(text)
+        return num
+    except ValueError:
+        return None
+
+
+def row_has_nonzero_data(row: pd.Series, value_cols: list[str]) -> bool:
+    """Return True if at least one of the given columns has a number > 0."""
+    for c in value_cols:
+        if c not in row:
+            continue
+        num = _coerce_number(row[c])
+        if num is not None and num > 0:
+            return True
+    return False
+
+
 def render_report(df: pd.DataFrame):
     """
-    Show results in collapsible sections by Topic, but hide rows that have
-    no meaningful (>0) values in any numeric column.
+    Show results in collapsible sections by Topic, but:
+    - hide topics we don't want as tables (but maybe we still use for summary)
+    - hide rows that have no meaningful (>0) values in any numeric column
+    - keep expanders collapsed by default
     """
     if df.empty:
         st.warning("No matching rows found in this CSV for the selected fields.")
@@ -236,7 +357,17 @@ def render_report(df: pd.DataFrame):
 
     topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
 
+    # Topics you said you don't need as visible tables:
+    HIDE_THESE_TOPICS = {
+        "Mobility status 1 year ago",
+        "Mobility status 5 years ago",
+        "Selected places of birth for the recent immigrant population",
+    }
+
     for topic, sub in df.groupby(topic_col, dropna=False):
+        if topic in HIDE_THESE_TOPICS:
+            continue
+
         # keep only rows where at least one of the value_cols is >0
         filtered_rows = []
         for _, r in sub.iterrows():
@@ -251,6 +382,7 @@ def render_report(df: pd.DataFrame):
 
         with st.expander(f"📂 {topic}", expanded=False):
             st.dataframe(pretty_df, use_container_width=True)
+
 
 def drop_zero_only_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -333,33 +465,6 @@ def build_printable_html(df: pd.DataFrame) -> str:
     return "\n".join(parts)
 
 
-def _coerce_number(val):
-    """
-    Try to turn a cell like '123', '12.3', '12.3 %', '0', '..', etc.
-    into a float. Return None if it's not usable.
-    """
-    if pd.isna(val):
-        return None
-    text = str(val).strip()
-    if text in ["", "..", "...", "F", "X"]:
-        return None
-    text = text.replace("%", "").replace(",", "")
-    try:
-        num = float(text)
-        return num
-    except ValueError:
-        return None
-
-def row_has_nonzero_data(row: pd.Series, value_cols: list[str]) -> bool:
-    """Return True if at least one of the given columns has a number > 0."""
-    for c in value_cols:
-        if c not in row:
-            continue
-        num = _coerce_number(row[c])
-        if num is not None and num > 0:
-            return True
-    return False
-
 def pick_geo_col(df: pd.DataFrame) -> str | None:
     """
     Try to guess which column in df is the actual geography data column
@@ -388,6 +493,7 @@ def pick_geo_col(df: pd.DataFrame) -> str | None:
 
     return best_col
 
+
 def _best_numeric_from(df, topic_regex=None, char_regex=None, geo_col=None, min_pct=None):
     """
     Convenience finder:
@@ -411,6 +517,7 @@ def _best_numeric_from(df, topic_regex=None, char_regex=None, geo_col=None, min_
             continue
         return num
     return None
+
 
 def extract_significant_languages(df, geo_col, pop_val_num):
     """
@@ -491,8 +598,6 @@ def extract_significant_languages(df, geo_col, pop_val_num):
             continue
 
         # Heuristic: keep things that look like named languages / ethnolinguistic communities
-        # e.g. "German", "Low German", "Tagalog (Filipino)", "Punjabi (Panjabi)",
-        # "Cree languages", "Blackfoot", "Dene", etc.
         clean_label = raw_label
         clean_label = clean_label.replace(" (Filipino)", "")
         clean_label = clean_label.replace(" (Panjabi)", "")
@@ -524,116 +629,140 @@ def extract_significant_languages(df, geo_col, pop_val_num):
 
     return ordered_unique
 
-def extract_indigenous_nations(df, geo_col):
+
+def derive_indigenous_from_ethnic_origin(
+    df: pd.DataFrame,
+    geo_col: str,
+    pop_val_num: float | None = None
+) -> pd.DataFrame:
     """
-    Return a list of Indigenous Nations / Peoples present in meaningful numbers.
-    We only surface culturally meaningful identifiers, not ancestry bookkeeping combos.
+    Build a compact table of Indigenous groups using the Ethnic origin / Ethnic or cultural origin topic.
+    Output: columns ['Group', 'Count', 'Percent'] (Percent only if pop_val_num provided)
     """
 
-    INDIG_TOPIC_REGEX = "Indigenous population|Indigenous ancestry|Indigenous identity"
+    if df.empty or not geo_col:
+        return pd.DataFrame(columns=["Group", "Count", "Percent"])
 
-    # Words/phrases that we consider valid to surface
-    allowed_markers = [
-        "cree",
-        "dene",
-        "blackfoot",
-        "stoney",
-        "saulteaux",
-        "anishinaabe",
-        "ojibwe",
-        "métis",
-        "metis",
-        "inuit",
-        # we'll include general 'first nations' only if we don't get more specific
-        "first nations",
+    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
+    ETHNIC_TOPIC_REGEX = r"(Ethnic origin|Ethnic or cultural origin|Origine ethnique ou culturelle)"
+
+    sub = df[df[topic_col].str.contains(ETHNIC_TOPIC_REGEX, case=False, na=False)].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=["Group", "Count", "Percent"])
+
+    # Canonical buckets for AB-relevant Nations/Peoples (+ common variants)
+    groups_patterns: dict[str, list[str]] = {
+        "Cree / Anishinaabe (incl. Saulteaux, Ojibwe, Oji-Cree)": [
+            r"\bcree\b", r"\bplains\s*cree\b", r"\bwoodland\s*cree\b",
+            r"\boji[\-\s]?cree\b", r"\bsaulteaux\b", r"\banishinaabe\b", r"\bojibw?e?y?\b",
+        ],
+        "Dene": [r"\bdene\b"],
+        "Tsuut’ina": [r"\btsu+?t[’'\- ]?ina\b"],
+        "Blackfoot": [r"\bblackfoot\b"],
+        "Stoney Nakoda": [r"\bstoney\b", r"\bnakoda\b"],
+        "Métis": [r"\bm[ée]tis\b", r"\bmetis\b"],
+        "Inuit": [r"\binuit\b"],
+        "First Nations (unspecified)": [
+            r"first\s+nations\s*\(north american indian\).*n\.o\.s\.",
+            r"\bfirst\s+nations\b.*\bn\.o\.s\.",
+            r"\bnorth american indigenous\b.*\bn\.o\.s\.",
+        ],
+    }
+
+    # Ignore obvious non-ethnic / irrelevant categories
+    ignore_if_matches = [
+        r"\bchristian\b", r"\bbuddhist\b", r"\bhindu\b", r"\bmuslim\b", r"\bsikh\b",
+        r"\bontarian\b", r"\balbertan\b", r"\bmanitoban\b", r"\bnewfoundlander\b",
+        r"\bcanadian\b", r"\bqu[eè]b[ée]cois\b", r"\bfranco\s*ontarian\b",
+        r"\bafrican\b.*\bn\.o\.s\.", r"\basian\b.*\bn\.o\.s\.", r"\bslavic\b.*\bn\.o\.s\.",
+        r"\bnorth american\b.*\bn\.o\.s\.",
     ]
+    ignore_re = re.compile("|".join(ignore_if_matches), re.IGNORECASE)
 
-    # Phrases that we should IGNORE because they're structural/statistical, not communities
-    block_markers = [
-        "ancestry only",
-        "and non-indigenous",
-        "single ancestry",
-        "multiple aboriginal responses",
-        "first nations and métis",
-        "métis and non-indigenous",
-        "first nations, inuk (inuit), and métis",
-        "total",
-    ]
-
-    sub = df[df["Topic"].str.contains(INDIG_TOPIC_REGEX, case=False, na=False)].copy()
-
-    found_groups = []
+    tallies: dict[str, float] = {k: 0.0 for k in groups_patterns.keys()}
 
     for _, r in sub.iterrows():
-        raw_label = str(r["Characteristic"]).strip()
-        val_num = _coerce_number(r[geo_col])
-        if val_num is None or val_num <= 0:
+        label = str(r["Characteristic"]).strip().lower()
+        if ignore_re.search(label):
+            continue
+        val = _coerce_number(r[geo_col])
+        if val is None or val <= 0:
             continue
 
-        label_lower = raw_label.lower()
+        for group, patt_list in groups_patterns.items():
+            if any(re.search(p, label, flags=re.IGNORECASE) for p in patt_list):
+                tallies[group] += float(val)
+                break  # stop at first matching group
 
-        # if it's clearly a total row or ancestry bookkeeping row, skip it
-        if any(b in label_lower for b in block_markers):
-            continue
+    rows = []
+    for group, count in tallies.items():
+        if count > 0:
+            pct = (count / pop_val_num * 100.0) if (pop_val_num and pop_val_num > 0) else None
+            rows.append({
+                "Group": group,
+                "Count": int(round(count)),
+                "Percent": (f"{pct:.1f}%" if pct is not None else None),
+            })
 
-        # does this row look like it names a specific Nation / People?
-        matched_marker = None
-        for marker in allowed_markers:
-            if marker in label_lower:
-                matched_marker = marker
-                break
-        if not matched_marker:
-            continue
+    out = pd.DataFrame(rows, columns=["Group", "Count", "Percent"])
+    if not out.empty:
+        out = out.sort_values(by="Count", ascending=False, kind="mergesort").reset_index(drop=True)
+    return out
 
-        # Clean up wording
-        clean_label = raw_label
-        # Simplifications for nicer output:
-        replacements = {
-            "First Nations (North American Indian)": "First Nations",
-            "Cree First Nations": "Cree",
-            "Cree nations": "Cree",
-            "Dene First Nations": "Dene",
-            "Blackfoot First Nations": "Blackfoot",
-            "Métis": "Métis",
-            "Metis": "Métis",
-            "Inuit": "Inuit",
-        }
-        for old, new in replacements.items():
-            clean_label = clean_label.replace(old, new)
 
-        # Strip noisy trailing phrases
-        strip_phrases = [
-            "First Nations individuals",
-            "First Nations persons",
-            "First Nations people",
-        ]
-        for phrase in strip_phrases:
-            clean_label = clean_label.replace(phrase, "")
+def build_indigenous_table(df: pd.DataFrame, geo_col: str, pop_val_num: float | None):
+    """
+    Safe wrapper around derive_indigenous_from_ethnic_origin.
+    Returns a DataFrame with columns ['Group','Count','Percent'] or
+    an empty DataFrame if we can't build it.
+    """
+    try:
+        tbl = derive_indigenous_from_ethnic_origin(
+            df,
+            geo_col=geo_col,
+            pop_val_num=pop_val_num
+        )
+        if tbl is None:
+            return pd.DataFrame(columns=["Group", "Count", "Percent"])
+        return tbl
+    except Exception:
+        # If anything goes sideways (missing topic, weird column), fail soft.
+        return pd.DataFrame(columns=["Group", "Count", "Percent"])
 
-        clean_label = clean_label.strip()
 
-        found_groups.append(clean_label)
+def summarize_indigenous_nations_from_ethnic(df: pd.DataFrame) -> list[str]:
+    """
+    Return a cleaned list of Nation/People names (no counts) based on the
+    ethnic-origin-derived Indigenous table.
+    """
+    geo_col = pick_geo_col(df)
+    if not geo_col:
+        return []
 
-    # Deduplicate while keeping order
+    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
+    pop_rows = df[
+        (df[topic_col].str.contains("Population and dwellings", case=False, na=False)) &
+        (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
+    ]
+    pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
+
+    nations_df = derive_indigenous_from_ethnic_origin(df, geo_col, pop_val_num)
+    if nations_df.empty:
+        return []
+
+    # Dedupe groups in order
+    groups = nations_df["Group"].astype(str).tolist()
     seen = set()
-    ordered_unique = []
-    for grp in found_groups:
-        key = grp.lower()
-        if key not in seen:
-            seen.add(key)
-            ordered_unique.append(grp)
+    ordered = []
+    for g in groups:
+        low = g.lower().strip()
+        if low not in seen:
+            seen.add(low)
+            ordered.append(g)
+    return ordered
 
-    # If we captured both specific Nations (Cree, Dene, etc.) and a generic "First Nations",
-    # we can drop the generic "First Nations" because the specifics are better.
-    specific_terms = [g for g in ordered_unique if g.lower() not in ["first nations"]]
-    if specific_terms:
-        ordered_unique = specific_terms
 
-    return ordered_unique
-
-from datetime import date, datetime
-from collections import OrderedDict
-
+# --- Age band logic and cohort-aging ---
 CENSUS_REFERENCE_DATE = date(2021, 5, 11)  # 2021 Census Day
 
 AGE_BANDS_ORDER = [
@@ -657,6 +786,7 @@ AGE_BANDS_ORDER = [
     "85 years and over",
 ]
 
+
 def _find_age_value(df, geo_col, band_label):
     row = df[
         (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
@@ -672,6 +802,7 @@ def _find_age_value(df, geo_col, band_label):
         return 0.0
     return _coerce_number(row.iloc[0][geo_col]) or 0.0
 
+
 def extract_age_bands(df, geo_col) -> OrderedDict:
     """
     Returns an ordered dict of {band_label: count} for standard 5-year bands and 85+.
@@ -681,6 +812,7 @@ def extract_age_bands(df, geo_col) -> OrderedDict:
     for lab in AGE_BANDS_ORDER:
         bands[lab] = float(_find_age_value(df, geo_col, lab))
     return bands
+
 
 def _shift_once_one_year(bands: OrderedDict) -> OrderedDict:
     """
@@ -693,16 +825,16 @@ def _shift_once_one_year(bands: OrderedDict) -> OrderedDict:
         v = bands[k]
         if k == "85 years and over":
             # receives inflow from previous band; keeps its current residents
-            out[k] += v  # current
-            # inflow added below from previous band
+            out[k] += v
         else:
-            stay = v * 4.0/5.0
-            move = v * 1.0/5.0
+            stay = v * 4.0 / 5.0
+            move = v * 1.0 / 5.0
             out[k] += stay
             # push to next band
-            nxt = keys[i+1]
+            nxt = keys[i + 1]
             out[nxt] += move
     return out
+
 
 def age_bands_adjust_to_date(bands: OrderedDict, as_of: date) -> OrderedDict:
     """
@@ -731,65 +863,18 @@ def age_bands_adjust_to_date(bands: OrderedDict, as_of: date) -> OrderedDict:
             if k == "85 years and over":
                 out[k] += v
             else:
-                stay = v * (1.0 - frac/5.0)
-                move = v * (frac/5.0)
+                stay = v * (1.0 - frac / 5.0)
+                move = v * (frac / 5.0)
                 out[k] += stay
-                nxt = keys[i+1]
+                nxt = keys[i + 1]
                 out[nxt] += move
         cur = out
 
     return cur
 
+
 def sum_bands(bands: OrderedDict, wanted_labels: list[str]) -> float:
     return float(sum(bands.get(l, 0.0) for l in wanted_labels))
-
-import os
-import re
-
-def extract_place_name(upload_name: str) -> str:
-    """
-    Try to turn something like
-    'CensusProfile2021-ProfilRecensement2021-CountyOfStettlerNo6.csv'
-    into 'County Of Stettler No 6'.
-
-    Heuristic:
-    - Strip extension
-    - Split on -, _, or spaces
-    - Take the last chunk that has letters in it
-    - Insert spaces before capital letters/numbers to make it friendlier
-    Fallback: whole stem.
-    """
-    stem = os.path.splitext(upload_name)[0]
-
-    # break on common separators
-    parts = re.split(r"[-_]", stem)
-    # prefer the last part that actually has alphabetic characters
-    candidate = None
-    for p in reversed(parts):
-        if re.search(r"[A-Za-z]", p):
-            candidate = p
-            break
-    if candidate is None:
-        candidate = stem
-
-    # clean weird doubled words like 'ProfilRecensement2021'
-    # We'll drop leading stuff like 'CensusProfile2021'/'ProfilRecensement2021'
-    if re.match(r"(?i)censusprofile|profilrecensement", candidate):
-        # if that chunk is junk, fall back to whole stem (last part with letters may have failed)
-        candidate = stem
-
-    # Insert spaces before capital letters or digits to get "CountyOfStettlerNo6" -> "County Of Stettler No 6"
-    friendly = re.sub(r"(?<!^)([A-Z0-9])", r" \1", candidate).strip()
-
-    # Collapse multiple spaces
-    friendly = re.sub(r"\s+", " ", friendly)
-
-    # Title case to read nicely
-    friendly = friendly.strip()
-    if friendly:
-        friendly = friendly[0].upper() + friendly[1:]
-
-    return friendly
 
 
 def get_childteen_bands(df: pd.DataFrame, geo_col: str, as_of_date: date | None):
@@ -845,144 +930,44 @@ def get_childteen_bands(df: pd.DataFrame, geo_col: str, as_of_date: date | None)
 
     return result
 
-import re
 
-def derive_indigenous_from_ethnic_origin(
-    df: pd.DataFrame,
-    geo_col: str,
-    pop_val_num: float | None = None
-) -> pd.DataFrame:
+def extract_place_name(upload_name: str) -> str:
     """
-    Build a compact table of Indigenous groups using the Ethnic origin / Ethnic or cultural origin topic.
-    Output: columns ['Group', 'Count', 'Percent'] (Percent only if pop_val_num provided)
+    Try to turn something like
+    'CensusProfile2021-ProfilRecensement2021-CountyOfStettlerNo6.csv'
+    into 'County Of Stettler No 6'.
     """
+    stem = os.path.splitext(upload_name)[0]
 
-    if df.empty or not geo_col:
-        return pd.DataFrame(columns=["Group", "Count", "Percent"])
+    # break on common separators
+    parts = re.split(r"[-_]", stem)
+    # prefer the last part that actually has alphabetic characters
+    candidate = None
+    for p in reversed(parts):
+        if re.search(r"[A-Za-z]", p):
+            candidate = p
+            break
+    if candidate is None:
+        candidate = stem
 
-    # Use normalized topic if present
-    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
-    ETHNIC_TOPIC_REGEX = r"(Ethnic origin|Ethnic or cultural origin|Origine ethnique ou culturelle)"
+    # If the chosen chunk is just "CensusProfile2021" etc., fall back to whole stem
+    if re.match(r"(?i)censusprofile|profilrecensement", candidate):
+        candidate = stem
 
-    sub = df[df[topic_col].str.contains(ETHNIC_TOPIC_REGEX, case=False, na=False)].copy()
-    if sub.empty:
-        return pd.DataFrame(columns=["Group", "Count", "Percent"])
+    # Insert spaces before capital letters or digits to get
+    # "CountyOfStettlerNo6" -> "County Of Stettler No 6"
+    friendly = re.sub(r"(?<!^)([A-Z0-9])", r" \1", candidate).strip()
 
-    # Canonical buckets for AB-relevant Nations/Peoples (+ common variants)
-    groups_patterns: dict[str, list[str]] = {
-        "Cree / Anishinaabe (incl. Saulteaux, Ojibwe, Oji-Cree)": [
-            r"\bcree\b", r"\bplains\s*cree\b", r"\bwoodland\s*cree\b",
-            r"\boji[\-\s]?cree\b", r"\bsaulteaux\b", r"\banishinaabe\b", r"\bojibw?e?y?\b",
-        ],
-        "Dene": [r"\bdene\b"],
-        "Tsuut’ina": [r"\btsu+?t[’'\- ]?ina\b"],
-        "Blackfoot": [r"\bblackfoot\b"],
-        "Stoney Nakoda": [r"\bstoney\b", r"\bnakoda\b"],
-        "Métis": [r"\bm[ée]tis\b", r"\bmetis\b"],
-        "Inuit": [r"\binuit\b"],
-        "First Nations (unspecified)": [
-            r"first\s+nations\s*\(north american indian\).*n\.o\.s\.",
-            r"\bfirst\s+nations\b.*\bn\.o\.s\.",
-            r"\bnorth american indigenous\b.*\bn\.o\.s\.",
-        ],
-    }
+    # Collapse multiple spaces
+    friendly = re.sub(r"\s+", " ", friendly)
 
-    # Ignore obvious non-ethnic / irrelevant categories
-    ignore_if_matches = [
-        r"\bchristian\b", r"\bbuddhist\b", r"\bhindu\b", r"\bmuslim\b", r"\bsikh\b",
-        r"\bontarian\b", r"\balbertan\b", r"\bmanitoban\b", r"\bnewfoundlander\b",
-        r"\bcanadian\b", r"\bqu[eè]b[ée]cois\b", r"\bfranco\s*ontarian\b",
-        r"\bafrican\b.*\bn\.o\.s\.", r"\basian\b.*\bn\.o\.s\.", r"\bslavic\b.*\bn\.o\.s\.",
-        r"\bnorth american\b.*\bn\.o\.s\.",
-    ]
-    ignore_re = re.compile("|".join(ignore_if_matches), re.IGNORECASE)
+    # Title case
+    friendly = friendly.strip()
+    if friendly:
+        friendly = friendly[0].upper() + friendly[1:]
 
-    # Tally
-    tallies: dict[str, float] = {k: 0.0 for k in groups_patterns.keys()}
+    return friendly
 
-    for _, r in sub.iterrows():
-        label = str(r["Characteristic"]).strip().lower()
-        if ignore_re.search(label):
-            continue
-        val = _coerce_number(r[geo_col])
-        if val is None or val <= 0:
-            continue
-
-        for group, patt_list in groups_patterns.items():
-            if any(re.search(p, label, flags=re.IGNORECASE) for p in patt_list):
-                tallies[group] += float(val)
-                break  # stop at first matching group
-
-    rows = []
-    for group, count in tallies.items():
-        if count > 0:
-            pct = (count / pop_val_num * 100.0) if (pop_val_num and pop_val_num > 0) else None
-            rows.append({
-                "Group": group,
-                "Count": int(round(count)),
-                "Percent": (f"{pct:.1f}%" if pct is not None else None),
-            })
-
-    out = pd.DataFrame(rows, columns=["Group", "Count", "Percent"])
-    if not out.empty:
-        out = out.sort_values(by="Count", ascending=False, kind="mergesort").reset_index(drop=True)
-    return out
-
-def build_indigenous_table(df: pd.DataFrame, geo_col: str, pop_val_num: float | None):
-    """
-    Safe wrapper around derive_indigenous_from_ethnic_origin.
-    Returns a DataFrame with columns ['Group','Count','Percent'] or
-    an empty DataFrame if we can't build it.
-    """
-    try:
-        tbl = derive_indigenous_from_ethnic_origin(
-            df,
-            geo_col=geo_col,
-            pop_val_num=pop_val_num
-        )
-        if tbl is None:
-            return pd.DataFrame(columns=["Group", "Count", "Percent"])
-        return tbl
-    except Exception:
-        # If anything goes sideways (missing topic, weird column), fail soft.
-        return pd.DataFrame(columns=["Group", "Count", "Percent"])
-
-def summarize_indigenous_nations_from_ethnic(df: pd.DataFrame) -> list[str]:
-    """
-    Return a cleaned list of Nation/People names (no counts) based on the
-    ethnic-origin-derived Indigenous table.
-    We'll reuse derive_indigenous_from_ethnic_origin() internally.
-    """
-    geo_col = pick_geo_col(df)
-    if not geo_col:
-        return []
-
-    # grab 2021 pop for percentages
-    pop_rows = df[
-        ((df.get("Topic_norm", df["Topic"])
-           if "Topic_norm" in df.columns else df["Topic"])
-          .str.contains("Population and dwellings", case=False, na=False))
-        &
-        (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
-    ]
-    pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
-
-    nations_df = derive_indigenous_from_ethnic_origin(df, geo_col, pop_val_num)
-    if nations_df.empty:
-        return []
-
-    # Use the "Group" column
-    groups = nations_df["Group"].astype(str).tolist()
-
-    # Deduplicate while preserving order
-    seen = set()
-    ordered = []
-    for g in groups:
-        low = g.lower().strip()
-        if low not in seen:
-            seen.add(low)
-            ordered.append(g)
-    return ordered
 
 def generate_summary(
     df: pd.DataFrame,
@@ -1017,20 +1002,20 @@ def generate_summary(
     # ---------------------------
     # 2. Age structure
     # ---------------------------
-    kids_band_labels  = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
-    teen_band_labels  = ["15 to 19 years"]
+    kids_band_labels = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
+    teen_band_labels = ["15 to 19 years"]
     senior_band_labels = [
-        "65 to 69 years","70 to 74 years","75 to 79 years","80 to 84 years","85 years and over"
+        "65 to 69 years", "70 to 74 years", "75 to 79 years",
+        "80 to 84 years", "85 years and over"
     ]
 
     if as_of_date is not None:
         age_bands = extract_age_bands(df, geo_col)
         adj = age_bands_adjust_to_date(age_bands, as_of=as_of_date)
-        kids_val   = sum_bands(adj, kids_band_labels)
-        teens_val  = sum_bands(adj, teen_band_labels)
+        kids_val = sum_bands(adj, kids_band_labels)
+        teens_val = sum_bands(adj, teen_band_labels)
         seniors_val = sum_bands(adj, senior_band_labels)
     else:
-        # fallback: pull direct numbers
         def grab_sum_for(labels):
             total = 0.0
             for lab in labels:
@@ -1044,11 +1029,10 @@ def generate_summary(
                         total += v
             return total
 
-        kids_val   = grab_sum_for(kids_band_labels)
-        teens_val  = grab_sum_for(teen_band_labels)
+        kids_val = grab_sum_for(kids_band_labels)
+        teens_val = grab_sum_for(teen_band_labels)
         seniors_val = grab_sum_for(senior_band_labels)
 
-    # percentages and approx counts
     def pct_and_count(val):
         if not val or val <= 0 or not pop_val_num or pop_val_num <= 0:
             return None, None
@@ -1103,8 +1087,11 @@ def generate_summary(
 
     # mobility / turnover
     mobility_rows = df[
-        df["Topic"].str.contains("Mobility status 1 year ago|Mobility status 5 years ago",
-                                 case=False, na=False)
+        df["Topic"].str.contains(
+            "Mobility status 1 year ago|Mobility status 5 years ago",
+            case=False,
+            na=False,
+        )
     ]
     mobility_flag = False
     for _, r in mobility_rows.iterrows():
@@ -1131,19 +1118,20 @@ def generate_summary(
             car_commute_flag = True
 
     # ---------------------------
-    # 4. Languages / Nations
+    # 4. Languages / Indigenous Nations
     # ---------------------------
     sig_langs = extract_significant_languages(df, geo_col, pop_val_num)
-    nations = build_indigenous_table(df, geo_col, pop_val_num)  # from derive_indigenous_from_ethnic_origin wrapper
 
-    # nations is a DataFrame like:
-    #   Group | Count | Percent
-    # We'll turn that into a list of group names with % if available.
+    nations = build_indigenous_table(df, geo_col, pop_val_num)
     nation_bits = []
     if nations is not None and not nations.empty:
         for _, row in nations.iterrows():
             g = str(row["Group"])
-            p = str(row["Percent"]) if ("Percent" in nations.columns and pd.notna(row["Percent"])) else None
+            p = (
+                str(row["Percent"])
+                if ("Percent" in nations.columns and pd.notna(row["Percent"]))
+                else None
+            )
             if p and p != "None":
                 nation_bits.append(f"{g} ({p})")
             else:
@@ -1157,12 +1145,14 @@ def generate_summary(
     youth_lines = []
     if kids_cnt and kids_pct:
         youth_lines.append(
-            f"There are roughly {kids_cnt} children under 15 ({kids_pct:.1f}% of the population) living in {community_label}. "
+            f"There are roughly {kids_cnt} children under 15 "
+            f"({kids_pct:.1f}% of the population) living in {community_label}. "
             "That supports recurring, in-community kids programming — not just a one-time visit."
         )
     else:
         youth_lines.append(
-            "There is a meaningful number of young children here, which supports recurring, in-community kids programming — not just a one-time visit."
+            "There is a meaningful number of young children here, which supports recurring, "
+            "in-community kids programming — not just a one-time visit."
         )
 
     if teens_cnt and teens_pct:
@@ -1173,14 +1163,15 @@ def generate_summary(
         )
     else:
         youth_lines.append(
-            "There is also a visible teen (15–19) population. This is where drop-off in participation starts, "
-            "especially for girls, so programming must feel socially safe before it asks for performance."
+            "There is also a visible teen (15–19) population. This is where drop-off in participation "
+            "starts, especially for girls, so programming must feel socially safe before it asks for performance."
         )
 
     if seniors_cnt and seniors_pct:
         youth_lines.append(
             f"About {seniors_cnt} residents ({seniors_pct:.1f}%) are 65+. "
-            "Grandparents often act as drivers and supervisors, so it matters that our spaces feel welcoming and have sightlines/seating."
+            "Grandparents often act as drivers and supervisors, so it matters that our spaces feel welcoming "
+            "and have sightlines/seating."
         )
     else:
         youth_lines.append(
@@ -1250,7 +1241,8 @@ def generate_summary(
                 "Families are using " +
                 ", ".join(sig_langs[:-1]) +
                 f", and {sig_langs[-1]} at home in meaningful numbers. "
-                "Outreach and consent materials should reflect that — if the parent can’t read the invite, the child never shows up."
+                "Outreach and consent materials should reflect that — if the parent can’t read the invite, "
+                "the child never shows up."
             )
 
     if nation_bits:
@@ -1271,7 +1263,8 @@ def generate_summary(
 
     if not lang_lines:
         lang_lines.append(
-            "We should not assume English-only outreach. Even when English is widely spoken, trust and comfort often sit with a first or home language."
+            "We should not assume English-only outreach. Even when English is widely spoken, "
+            "trust and comfort often sit with a first or home language."
         )
 
     # D) Schedule & delivery practicality
@@ -1293,7 +1286,8 @@ def generate_summary(
             )
     else:
         sched_lines.append(
-            "Scheduling should assume tight evenings. Short, predictable blocks in a local space (school gym, community hall) will work better than destination programs."
+            "Scheduling should assume tight evenings. Short, predictable blocks in a local space "
+            "(school gym, community hall) will work better than destination programs."
         )
 
     sched_block = " ".join(sched_lines)
@@ -1319,6 +1313,7 @@ def generate_summary(
     ]
 
     return "\n\n".join(final_sections)
+
 
 def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1372,7 +1367,6 @@ def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     df2 = df2.drop(columns=drop_empty, errors="ignore")
 
     # 3) Drop duplicate-suffix columns like '.1', '.2' when base exists and dup is empty/identical
-    #    e.g., 'Total_Flag.1' next to 'Total_Flag'
     dup_like = []
     for c in df2.columns:
         m = re.match(r"^(.*)\.(\d+)$", c)
@@ -1392,7 +1386,6 @@ def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     return df2
 
-import re
 
 def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1410,16 +1403,16 @@ def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
 
     topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
 
-    # We'll build rows we keep in order
     seen = set()
     keep_rows = []
 
     for idx, row in df.iterrows():
-        key = (str(row.get(topic_col, "")).strip(),
-               str(row.get("Characteristic", "")).strip())
+        key = (
+            str(row.get(topic_col, "")).strip(),
+            str(row.get("Characteristic", "")).strip(),
+        )
 
         if key in seen:
-            # already saw this Topic+Characteristic → likely the "percent only" duplicate
             continue
         seen.add(key)
         keep_rows.append(idx)
@@ -1427,90 +1420,6 @@ def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
     out = df.loc[keep_rows].copy().reset_index(drop=True)
     return out
 
-def resolve_topic_column(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Create Topic_norm by:
-    - Using Topic when it looks like a proper label (not just '200', '201', empty).
-    - Promoting Characteristic lines like '200: Main mode of commuting ...' to become the current topic label.
-    - Forward-filling that topic until the next header.
-    Also drops pure description header rows (e.g., lines whose Characteristic is the long sentence that
-    'refers to ...' and have no data).
-    """
-    if df.empty:
-        df["Topic_norm"] = df.get("Topic", "")
-        return df
-
-    df = df.copy()
-    # Drop any pure description rows like "Commuting duration refers to ..."
-    desc_mask = df["Characteristic"].str.contains(r"\brefers to\b", case=False, na=False)
-    # Keep only rows that have at least one non-empty numeric-ish value
-    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Notes", "Note", "Symbol", "Flags", "Flag")]
-    has_data = df[value_cols].applymap(lambda x: str(x).strip()).apply(lambda row: any(v not in ["", "None", "nan", "NaN", "F", "X", "..", "..."] for v in row), axis=1)
-    df = df[~(desc_mask & ~has_data)].copy()
-
-    # Start Topic_norm as Topic (string)
-    df["Topic_norm"] = df.get("Topic", "").astype(str).str.strip()
-
-    current_topic = None
-
-    rows_to_drop = []
-
-    # Identify numeric-only Topic entries (e.g., '200', '201')
-    def looks_numeric_topic(t: str) -> bool:
-        t = (t or "").strip()
-        return bool(re.fullmatch(r"\d{1,3}", t))
-
-    # Loop rows to detect header lines in Characteristic like "200: Main mode of commuting ..."
-    for idx, row in df.iterrows():
-        topic = str(row.get("Topic", "")).strip()
-        char  = str(row.get("Characteristic", "")).strip()
-
-        # Case A: a proper Topic string already present and not numeric-only
-        if topic and not looks_numeric_topic(topic) and topic.lower() not in ["topic", ""]:
-            current_topic = topic
-            df.at[idx, "Topic_norm"] = current_topic
-            continue
-
-        # Case B: Characteristic contains a "###: Title" header → promote to topic
-        m = re.match(r"^\s*(\d{1,3})\s*:\s*(.+)$", char)
-        if m:
-            # Use the text after the colon as the topic label (strip any trailing 'refers to...' sentence)
-            label = m.group(2).strip()
-            # If label has a long description (e.g., '... refers to ...'), keep the part before 'refers to'
-            label = re.split(r"\s+refers to\s+", label, maxsplit=1, flags=re.IGNORECASE)[0].strip()
-            current_topic = label if label else char
-            df.at[idx, "Topic_norm"] = current_topic
-
-            # If this is just the header/description row (no data), mark to drop later
-            # Detect "refers to" header rows or rows where all value columns are empty/placeholders
-            value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")]
-            maybe_desc = ("refers to" in char.lower())
-            if maybe_desc:
-                rows_to_drop.append(idx)
-            else:
-                # also drop if all value cells are empty/placeholder
-                placeholders = {"", "..", "...", "F", "X"}
-                col_vals = []
-                for c in value_cols:
-                    v = df.at[idx, c] if c in df.columns else None
-                    s = "" if pd.isna(v) else str(v).strip()
-                    col_vals.append(s)
-                if all((v == "" or v.upper() in placeholders) for v in col_vals):
-                    rows_to_drop.append(idx)
-            continue
-
-        # Case C: no good Topic; carry forward the last known topic
-        if current_topic:
-            df.at[idx, "Topic_norm"] = current_topic
-        else:
-            # fallback: keep whatever Topic had (possibly numeric) so downstream still has something
-            df.at[idx, "Topic_norm"] = topic
-
-    # Drop the header/description rows we flagged
-    if rows_to_drop:
-        df = df.drop(index=rows_to_drop)
-
-    return df
 
 # ------------------------------------------------
 # UI
@@ -1525,26 +1434,28 @@ if uploaded_file is None:
     st.info("Upload a CSV to generate the community profile.")
     st.stop()
 else:
-    # 1) Load + filter
+    # 1) Load raw census CSV
     raw_df = load_statcan_csv(uploaded_file)
+
+    # 2) Filter to the topics we care about
     cleaned_df = filter_relevant_rows(raw_df)
-    
-    # NEW: remove duplicate "percent-only" twins
+
+    # 3) Drop the annoying duplicate "percent-only" rows
     cleaned_df = collapse_duplicate_characteristics(cleaned_df)
-    
-    # already-existing cleanup of junk columns and empty flag columns
+
+    # 4) Strip metadata / placeholder columns from the filtered set
     cleaned_df = prune_columns(cleaned_df)
 
-    # 2) Sidebar controls (age-to-date)
+    # 5) Sidebar controls (age-to-date)
     with st.sidebar:
         st.markdown("### Real-time age adjustment")
         use_age_adjust = st.checkbox("Age cohorts forward from 2021", value=True)
         as_of = st.date_input("As-of date", value=date.today())
 
-    # 3) Summary (uses the age controls)
+    # 6) Summary (uses the age controls and the inferred place name)
     st.subheader("Community Profile Summary")
     place_guess = extract_place_name(uploaded_file.name)
-    
+
     summary_text = generate_summary(
         cleaned_df,
         as_of_date=(as_of if use_age_adjust else None),
@@ -1552,18 +1463,16 @@ else:
     )
     st.write(summary_text)
 
-    # 4) Filtered table view
+    # 7) Filtered table view (collapsible topics, zero-row suppression)
     st.subheader("Filtered Report")
     render_report(cleaned_df)
 
-    # --- Derived Indigenous table from Ethnic origin ---
+    # 8) Indigenous rollup from Ethnic origin
     geo_col = pick_geo_col(cleaned_df)
 
-    # population (for % column)
+    topic_col_for_pop = "Topic_norm" if "Topic_norm" in cleaned_df.columns else "Topic"
     pop_rows = cleaned_df[
-        ((cleaned_df.get("Topic_norm", cleaned_df["Topic"])
-           if "Topic_norm" in cleaned_df.columns else cleaned_df["Topic"])
-          .str.contains("Population and dwellings", case=False, na=False))
+        (cleaned_df[topic_col_for_pop].str.contains("Population and dwellings", case=False, na=False))
         &
         (cleaned_df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
     ]
@@ -1576,11 +1485,7 @@ else:
     else:
         st.dataframe(indig_from_ethnic, use_container_width=True)
 
-    # 5) Raw preview (optional)
-    # st.subheader("Raw Preview (first 20 rows)")
-    # st.dataframe(raw_df.head(20), use_container_width=True)
-
-    # 6) Exports
+    # 9) Exports
     st.subheader("Export")
     col1, col2 = st.columns(2)
     with col1:
