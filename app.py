@@ -917,8 +917,9 @@ def summarize_indigenous_nations_from_ethnic(df: pd.DataFrame) -> list[str]:
 
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
     """
-    Internal community brief for Alberta Ballet program staff.
-    Heavier on 'what to do when we show up', not just stats.
+    Produce a narrative field brief for outreach/program planning.
+    This version is longer, uses plain language, and gives direction,
+    using only local census data (no AI calls).
     """
 
     if df.empty:
@@ -928,64 +929,123 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
     if not geo_col:
         return "No summary available."
 
-    # -------------------------
-    # Population for % math
-    # -------------------------
+    paragraphs = []
+
+    # -------------------------------------------------
+    # 1. Population base
+    # -------------------------------------------------
     pop_rows = df[
-        (df["Topic_norm"].str.contains("Population and dwellings", case=False, na=False)) &
+        (df["Topic"].str.contains("Population and dwellings", case=False, na=False)) &
         (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
     ]
     pop_val_num = None
     if not pop_rows.empty:
         pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col])
+    pop_sentence = None
+    if pop_val_num and pop_val_num > 0:
+        pop_sentence = (
+            f"This community has roughly {int(round(pop_val_num, 0))} residents. "
+            "Everything below is meant to guide how we show up in that specific context."
+        )
+    else:
+        pop_sentence = (
+            "This community has a stable resident base. "
+            "Everything below is meant to guide how we show up in that specific context."
+        )
+    # we'll append this after we assemble all paragraphs, as an intro line.
 
-    # -------------------------
-    # Age structure
-    # -------------------------
-    kids_bands   = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
-    teens_bands  = ["15 to 19 years"]
+    # -------------------------------------------------
+    # 2. Age structure (kids, teens, seniors), with optional aging
+    # -------------------------------------------------
+    kids_bands = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
+    teens_bands = ["15 to 19 years"]
     seniors_bands = [
         "65 to 69 years", "70 to 74 years", "75 to 79 years",
-        "80 to 84 years", "85 years and over", "85 to 89 years",
-        "90 to 94 years", "95 to 99 years"
+        "80 to 84 years", "85 years and over",
     ]
 
-    def _sum_raw(labels):
-        total = 0.0
-        for lab in labels:
-            m = df[
-                (df["Topic_norm"].str.contains("Age characteristics", case=False, na=False)) &
-                (df["Characteristic"].str.contains(rf"^{lab}\b", case=False, na=False))
-            ]
-            if not m.empty:
-                v = _coerce_number(m.iloc[0][geo_col])
-                if v:
-                    total += v
-        return total
-
     if as_of_date is not None:
+        # age the cohorts forward
         age_bands = extract_age_bands(df, geo_col)
         adj_bands = age_bands_adjust_to_date(age_bands, as_of=as_of_date)
-        kids_val    = sum_bands(adj_bands, kids_bands)
-        teens_val   = sum_bands(adj_bands, teens_bands)
+
+        kids_val   = sum_bands(adj_bands, kids_bands)
+        teens_val  = sum_bands(adj_bands, teens_bands)
         seniors_val = sum_bands(adj_bands, seniors_bands)
     else:
-        kids_val    = _sum_raw(kids_bands)
-        teens_val   = _sum_raw(teens_bands)
-        seniors_val = _sum_raw(seniors_bands)
+        # direct 2021 bands
+        def grab_total_for(labels):
+            total = 0.0
+            for lab in labels:
+                total += _best_numeric_from(
+                    df,
+                    topic_regex="Age characteristics",
+                    char_regex=rf"{lab}",
+                    geo_col=geo_col,
+                    min_pct=None,
+                ) or 0.0
+            return total
 
-    kids_pct = teens_pct = seniors_pct = None
-    if pop_val_num and pop_val_num > 0:
-        if kids_val and kids_val > 0:
-            kids_pct  = (kids_val / pop_val_num) * 100.0
-        if teens_val and teens_val > 0:
-            teens_pct = (teens_val / pop_val_num) * 100.0
-        if seniors_val and seniors_val > 0:
-            seniors_pct = (seniors_val / pop_val_num) * 100.0
+        kids_val    = grab_total_for(kids_bands)
+        teens_val   = grab_total_for(teens_bands)
+        seniors_val = grab_total_for(seniors_bands)
 
-    # -------------------------
-    # Household / housing / money stress
-    # -------------------------
+    # percentages
+    kids_pct = (kids_val / pop_val_num * 100.0) if (pop_val_num and pop_val_num > 0 and kids_val > 0) else None
+    teens_pct = (teens_val / pop_val_num * 100.0) if (pop_val_num and pop_val_num > 0 and teens_val > 0) else None
+    seniors_pct = (seniors_val / pop_val_num * 100.0) if (pop_val_num and pop_val_num > 0 and seniors_val > 0) else None
+
+    age_lines = []
+
+    # Children
+    if kids_val and kids_val > 0:
+        if kids_pct and kids_pct >= 1.0:
+            age_lines.append(
+                f"There is a large base of young children (roughly ages 0–14, about {kids_pct:.1f}% of residents). "
+                "That means after-school and weekend-entry programs for early years and elementary ages will actually be used, "
+                "not just 'nice to have.' We should expect demand for safe, structured activity blocks rather than one-off events."
+            )
+        else:
+            age_lines.append(
+                "There is a meaningful number of young children (0–14). "
+                "This supports the case for consistent, repeating programs, not just a single visit."
+            )
+
+    # Teens
+    if teens_val and teens_val > 0:
+        if teens_pct and teens_pct >= 1.0:
+            age_lines.append(
+                f"There is also a visible teen population (15–19, ~{teens_pct:.1f}% of residents). "
+                "This matters for retention, especially for girls. "
+                "This is historically the age when girls start to drop organized physical activity, "
+                "so confidence, belonging, and non-judgmental space become the program, not just technique."
+            )
+        else:
+            age_lines.append(
+                "There is also a visible teen population (15–19). "
+                "Programming for this group has to feel socially safe first, physically active second."
+            )
+
+    # Seniors / grandparents
+    if seniors_val and seniors_val > 0:
+        if seniors_pct and seniors_pct >= 1.0:
+            age_lines.append(
+                f"Older adults (65+) are present at a meaningful level (~{seniors_pct:.1f}% of residents). "
+                "In many Alberta communities, grandparents are the ones physically getting kids to programs, "
+                "sitting in the lobby, and absorbing cost. We should expect multigenerational logistics."
+            )
+        else:
+            age_lines.append(
+                "There is a notable older adult population (65+). "
+                "Grandparents often act as transport and supervision, so informal seating and visibility into the space matters."
+            )
+
+    if age_lines:
+        paragraphs.append("YOUTH & CAREGIVERS\n" + " ".join(age_lines))
+
+    # -------------------------------------------------
+    # 3. Household structure, stability, cost pressure
+    # -------------------------------------------------
     single_parent_share = _best_numeric_from(
         df,
         topic_regex="Household type|Household and dwelling characteristics",
@@ -999,6 +1059,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
         topic_regex="Household and dwelling characteristics",
         char_regex="Average household size",
         geo_col=geo_col,
+        min_pct=None,
     )
 
     renters_share = _best_numeric_from(
@@ -1025,14 +1086,88 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
         min_pct=1.0,
     )
 
-    # -------------------------
-    # Indigenous Nations / Peoples
-    # -------------------------
-    nations = extract_indigenous_nations(df, geo_col)
+    household_bits = []
 
-    # -------------------------
-    # Languages / newcomers / minority-language rights
-    # -------------------------
+    # single / solo caregivers
+    if single_parent_share:
+        household_bits.append(
+            "There is a real share of single-caregiver households. "
+            "That usually means one adult is doing shift work, transport, meals, homework, and bedtime alone. "
+            "Programs that assume 'two parents can drive' will underperform here."
+        )
+
+    # household size
+    if hh_size and hh_size >= 2.5:
+        household_bits.append(
+            f"Average household size is about {hh_size:.1f} people. "
+            "That usually means multiple kids per home, cousins staying over, or grandparents in the same household. "
+            "When we invite 'a child', we should expect siblings to arrive too. "
+            "Snacks, chairs in hallways, and space for strollers actually matter."
+        )
+
+    # housing stability
+    if renters_share and (not owners_share or renters_share > owners_share):
+        household_bits.append(
+            "Housing skews toward renting. Renting families move more often and have less storage. "
+            "So 'bring your own shoes, tights, water bottle, etc.' is a barrier. "
+            "We should plan to supply basics and not treat gear as optional-but-expected."
+        )
+    elif owners_share:
+        household_bits.append(
+            "Most homes are owner-occupied, which usually means families are rooted and networked locally. "
+            "That can help with volunteer champions and word-of-mouth."
+        )
+
+    # cost stress
+    if low_income_val:
+        household_bits.append(
+            "Income pressure is present. We should assume cost is a blocker — not just class fees, "
+            "but rides, clothes, snacks, registration deposits, 'performance fees', etc. "
+            "Anything that sounds like 'tuition' will screen people out before we ever meet them."
+        )
+
+    if household_bits:
+        paragraphs.append("HOUSEHOLD REALITY & COST BARRIERS\n" + " ".join(household_bits))
+
+    # -------------------------------------------------
+    # 4. Indigenous Nations / Peoples
+    #    (from existing Indigenous tables and Ethnic origin roll-up)
+    # -------------------------------------------------
+    nations_list = extract_indigenous_nations(df, geo_col)
+    # also check the derived table if we built it up-thread (the Ethnic-origin-based grouping)
+    # we’ll try to infer if user kept that merged in the df:
+    derived_matches = df[
+        df.get("Topic_norm", df.get("Topic", "")).str.contains(
+            "Indigenous Population", case=False, na=False
+        )
+        if "Topic_norm" in df.columns or "Topic" in df.columns else []
+    ] if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    # prefer explicit Nations from extract_indigenous_nations
+    nations_out = nations_list if nations_list else []
+
+    if nations_out:
+        if len(nations_out) == 1:
+            paragraphs.append(
+                "INDIGENOUS PARTNERSHIP\n"
+                f"This community includes {nations_out[0]} in meaningful numbers. "
+                "Programming here must not be 'delivered to' Indigenous youth in isolation. "
+                "It needs to be planned with local Indigenous leadership, and ideally co-led or visibly welcomed by them. "
+                "Before offering any youth-facing activity, first ask: "
+                "“Who should we be talking to so this is respectful and useful?”"
+            )
+        else:
+            nice_list = ", ".join(nations_out[:-1]) + f", and {nations_out[-1]}"
+            paragraphs.append(
+                "INDIGENOUS PARTNERSHIP\n"
+                f"This community includes {nice_list} in meaningful numbers. "
+                "That means the work should be done in partnership, not just 'open to everyone.' "
+                "We should assume cultural protocol, local leadership presence, and ongoing relationship-building are required before we say we're 'serving Indigenous youth.'"
+            )
+
+    # -------------------------------------------------
+    # 5. Language / newcomer groups
+    # -------------------------------------------------
     specific_langs = extract_significant_languages(df, geo_col, pop_val_num)
 
     newcomer_val = _best_numeric_from(
@@ -1043,19 +1178,40 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
         min_pct=1.0,
     )
 
-    minority_lang_val = _best_numeric_from(
-        df,
-        topic_regex="Children eligible for instruction in the minority official language|Eligibility and instruction in the minority official language",
-        char_regex=None,
-        geo_col=geo_col,
-        min_pct=1.0,
-    )
+    lang_bits = []
 
-    # -------------------------
-    # Commuting / timing / travel load
-    # -------------------------
+    if specific_langs:
+        if len(specific_langs) == 1:
+            lang_bits.append(
+                f"Families are using {specific_langs[0]} at home in meaningful numbers. "
+                "That means registration, consent, and comfort messages may need to be available in more than English. "
+                "It's not 'translation as a courtesy'; it's translation as access."
+            )
+        else:
+            lang_bits.append(
+                "Families are using " +
+                ", ".join(specific_langs[:-1]) +
+                f", and {specific_langs[-1]} at home in meaningful numbers. "
+                "Outreach should not assume English is the language parents trust for decisions about their kids. "
+                "When we show up in the first language that families actually use at home, participation goes up."
+            )
+
+    if newcomer_val:
+        lang_bits.append(
+            "There is also a visible newcomer / recent-immigrant presence. "
+            "First contact should usually happen through someone the families already trust — school staff, "
+            "settlement workers, church or cultural organizers — rather than us walking in cold and pitching 'ballet.' "
+            "We should assume parents have questions about cost, safety, and whether their kids will be welcome, not just scheduling."
+        )
+
+    if lang_bits:
+        paragraphs.append("LANGUAGE, TRUST & NEW ARRIVALS\n" + " ".join(lang_bits))
+
+    # -------------------------------------------------
+    # 6. Commute / timing / logistics
+    # -------------------------------------------------
     commute_rows = df[
-        df["Topic_norm"].str.contains("Main mode of commuting|Commuting duration", case=False, na=False)
+        df["Topic"].str.contains("Main mode of commuting|Commuting duration", case=False, na=False)
     ]
 
     long_commute_flag = False
@@ -1065,179 +1221,63 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
         v = _coerce_number(r[geo_col])
         if not v or v <= 0:
             continue
-        if "60 minutes" in row_char or "longer" in row_char or "or more" in row_char:
+        if "60 minutes" in row_char or "longer" in row_char:
             long_commute_flag = True
         if ("car" in row_char or "automobile" in row_char or "driver" in row_char):
             car_commute_flag = True
 
-    # -------------------------
-    # Build narrative sections
-    # -------------------------
-    sections = []
-
-    # 1. Youth & caregivers
-    youth_lines = []
-
-    if kids_pct:
-        youth_lines.append(
-            f"About {kids_pct:.1f}% of residents are 0–14. That’s a high base of young kids who need safe, structured activity close to home, ideally after school."
-        )
-    elif kids_val and kids_val > 0:
-        youth_lines.append(
-            "There is a meaningful number of children age 0–14. Demand will be for recurring programs (weekly classes, standing times), not just one special event."
-        )
-
-    if teens_pct:
-        youth_lines.append(
-            f"Roughly {teens_pct:.1f}% are 15–19. This is the age where girls in particular tend to quit organized activity. Retention work (confidence, belonging, identity, non-judgmental spaces) matters here."
-        )
-    elif teens_val and teens_val > 0:
-        youth_lines.append(
-            "There is a visible 15–19 group. We should plan spaces that don’t feel like 'kids’ classes' but also aren’t high-performance or intimidating."
-        )
-
-    if seniors_pct:
-        youth_lines.append(
-            f"Older adults (65+) are about {seniors_pct:.1f}% of the population. Grandparents are likely doing pickups, waiting at the door, and deciding if we feel safe or not."
-        )
-    elif seniors_val and seniors_val > 0:
-        youth_lines.append(
-            "There’s also a notable older adult population (65+). Grandparents and elders may be the actual decision-makers for attendance."
-        )
-
-    # Program design priorities (always include)
-    youth_lines.append(
-        "Program design priorities: deliver movement experiences that feel welcoming, low-pressure, and fun — not technical audition prep. Assume mixed ages in the building (siblings + elders). We should make the space socially comfortable for caregivers to linger, not just drop and run."
-    )
-
-    if youth_lines:
-        sections.append("• Youth & caregivers:\n   " + "\n   ".join(youth_lines))
-
-    # 2. Household reality
-    hh_lines = []
-
-    if single_parent_share:
-        hh_lines.append(
-            "There is a noticeable share of single-parent households. That usually means limited transport flexibility and higher burnout. These caregivers need predictable timing and no penalty for missing a week."
-        )
-
-    if hh_size and hh_size >= 2.5:
-        hh_lines.append(
-            f"Average household size is about {hh_size:.1f} people. That suggests multiple kids per home, cousins in the same household, or grandparents living in. One signup may actually mean we're serving three kids and an elder."
-        )
-
-    if renters_share and (not owners_share or renters_share > owners_share):
-        hh_lines.append(
-            "Housing leans toward renting. Renting communities move more, which means kids drop off programs when they move across town. We cannot assume they'll 'stick with us next year' unless we stay embedded locally."
-        )
-    elif owners_share:
-        hh_lines.append(
-            "Most homes are owner-occupied. That often means families are rooted and will come back if they trust us. Long-term presence (year after year) will matter."
-        )
-
-    if low_income_val:
-        hh_lines.append(
-            "Cost pressure is real. Expect families to say yes in principle, then quietly drop because of gear/fees/transport. We should design zero-cost entry: loaner shoes, no dress code, no registration fee, no assumption that someone can drive 30 minutes."
-        )
-
-    # Caregiver stress profile (always include even if above fields are missing)
-    hh_lines.append(
-        "Caregiver stress profile: assume parents/caregivers are time-poor, juggling work and siblings. The program cannot create extra hassle. If we make it 'easy to say yes' (close by, no uniform, no fee surprise), attendance will hold."
-    )
-
-    if hh_lines:
-        sections.append("• Household reality:\n   " + "\n   ".join(hh_lines))
-
-    # 3. Indigenous partnership
-    indig_lines = []
-    if nations:
-        if len(nations) == 1:
-            indig_lines.append(
-                f"Indigenous families here include {nations[0]}. We should treat this as a partner community, not an audience. That means early contact with local leadership, clarity on who is teaching, and respect for protocol."
-            )
-        else:
-            joined = ", ".join(nations[:-1]) + f", and {nations[-1]}"
-            indig_lines.append(
-                f"Indigenous families here include {joined}. We should assume Indigenous youth will be in the room from day one and plan with those Nations instead of bolting them on later."
-            )
-    else:
-        indig_lines.append(
-            "We should assume Indigenous youth are present even if the table didn’t surface a specific Nation. Before delivering anything, we should ask who the local Nation(s) are, who is already doing youth work, and whether there are any protocols around space, regalia, or cultural elements we need to honour."
-        )
-
-    indig_lines.append(
-        "Do not frame this as outreach 'to' Indigenous kids. Frame it as co-delivery: Who from community is visible in the room? Who is greeting families? Who is vouching for safety?"
-    )
-
-    if indig_lines:
-        sections.append("• Indigenous partnership:\n   " + "\n   ".join(indig_lines))
-
-    # 4. Culture & language
-    lang_lines = []
-    if specific_langs:
-        if len(specific_langs) == 1:
-            lang_lines.append(
-                f"Families are using {specific_langs[0]} at home in meaningful numbers. Registration, consent, and safety info should be available verbally in that language, not just printed in English."
-            )
-        else:
-            lang_lines.append(
-                "Families are using " +
-                ", ".join(specific_langs[:-1]) +
-                f", and {specific_langs[-1]} at home in meaningful numbers. We should expect caregivers who are comfortable speaking to us face-to-face, but not comfortable filling out English paperwork."
-            )
-
-    if newcomer_val:
-        lang_lines.append(
-            "There is a recent immigrant / newcomer presence. Trust usually comes through schools, settlement workers, church/temple/mosque leaders, or cultural associations — not from us walking in cold. We should ask who already has credibility with moms."
-        )
-
-    if minority_lang_val:
-        lang_lines.append(
-            "Some children here qualify for minority-language (Francophone) education rights. Those parents will expect cultural respect and proper pronunciation of their kids’ names — not 'Anglicizing' them."
-        )
-
-    # Always include staff guidance here
-    lang_lines.append(
-        "Operationally: we should plan to greet caregivers in plain, friendly language, avoid jargon like 'residency' or 'intensive,' and explain that kids do not need prior dance training or special clothes."
-    )
-
-    if lang_lines:
-        sections.append("• Culture & language:\n   " + "\n   ".join(lang_lines))
-
-    # 5. Access & timing
-    access_lines = []
+    commute_lines = []
     if car_commute_flag and long_commute_flag:
-        access_lines.append(
-            "Caregivers are already driving and some are commuting long (>60 min) for work. They will not drive somewhere else again at 7:30 PM. If we want them, we go to them."
+        commute_lines.append(
+            "Caregivers are mostly driving, and some are already spending close to an hour getting to and from work. "
+            "That means anything that requires a second trip across town at 7:00pm is going to collapse. "
+            "The realistic delivery window is: right after school, in town, minimal extra travel."
         )
     elif car_commute_flag:
-        access_lines.append(
-            "Most adults are car-dependent. Parking, drop-off safety, and being 'on the way home from school' matters more than fancy facilities."
+        commute_lines.append(
+            "Most adults are in cars for work and errands already. "
+            "Asking them to drive again in the evening is high-friction. "
+            "We should plant programs where the kids already are — school gyms, community halls — rather than expecting families to come to us."
         )
     elif long_commute_flag:
-        access_lines.append(
-            "Some caregivers already travel long distances for work. After-school / early-evening programming in-town is realistic. Late-night centrally located programming is not."
+        commute_lines.append(
+            "Some caregivers are already doing long commutes. "
+            "Evening programs that require extra travel will drop off quickly. "
+            "The model that sticks here is short, local, and predictable."
         )
 
-    # Always include logistics ask
-    access_lines.append(
-        "We should aim to run inside spaces families already trust (school gym, community hall, band office multipurpose room, church basement) rather than a brand-new neutral venue."
+    if commute_lines:
+        paragraphs.append("TRANSPORT & SCHEDULING\n" + " ".join(commute_lines))
+
+    # -------------------------------------------------
+    # 7. Final guidance for staff
+    # -------------------------------------------------
+    closing_bits = []
+    closing_bits.append(
+        "Overall: we should assume cost is a barrier, time is tight, and trust is local. "
+        "That means: bring programming to the school or community hub; keep price effectively zero at point of use; "
+        "design spaces that welcome siblings and grandparents; and involve Indigenous and newcomer partners in both the welcome and the delivery so families can actually see themselves in the room."
     )
 
-    if access_lines:
-        sections.append("• Access & timing:\n   " + "\n   ".join(access_lines))
+    if single_parent_share or hh_size or low_income_val or specific_langs or newcomer_val:
+        closing_bits.append(
+            "Success here is not 'did kids dance once.' Success is: did parents feel safe keeping their kids in the room, "
+            "did we remove the cost reasons to say no, and did we make it easy enough that families can come back next week."
+        )
 
-    # 6. Delivery note (always include)
-    sections.append(
-        "• Delivery note:\n"
-        "   Our success in this community will depend on: (1) no-cost or very low-cost entry; "
-        "(2) showing up in spaces people already use; "
-        "(3) visible Indigenous and newcomer partnership so families see themselves represented; "
-        "(4) messaging that focuses on belonging, confidence, and movement — not elite ballet language."
-    )
+    paragraphs.append("PROGRAM DELIVERY NOTE\n" + " ".join(closing_bits))
 
-    # Join sections with blank lines for Streamlit readability
-    return "\n\n".join(sections)
+    # -------------------------------------------------
+    # 8. Assemble final output
+    # -------------------------------------------------
+    # Put population note at the very top as an intro paragraph
+    final_sections = []
+    if pop_sentence:
+        final_sections.append(pop_sentence)
+    final_sections.extend(paragraphs)
+
+    # Join sections with blank lines between them to improve readability in Streamlit
+    return "\n\n".join(final_sections)
 
 
 def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
