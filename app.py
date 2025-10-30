@@ -1398,8 +1398,8 @@ else:
         st.dataframe(indig_from_ethnic, use_container_width=True)
 
     # 5) Raw preview (optional)
-    st.subheader("Raw Preview (first 20 rows)")
-    st.dataframe(raw_df.head(20), use_container_width=True)
+    # st.subheader("Raw Preview (first 20 rows)")
+    # st.dataframe(raw_df.head(20), use_container_width=True)
 
     # 6) Exports
     st.subheader("Export")
