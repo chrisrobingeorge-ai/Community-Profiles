@@ -738,34 +738,36 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     kids_pct, kids_cnt = _percent_or_none(kids_val, pop_val_num)
     teens_pct, teens_cnt = _percent_or_none(teens_val, pop_val_num)
     seniors_pct, seniors_cnt = _percent_or_none(seniors_val, pop_val_num)
-    # --- NEW: Children by detailed age bands (0–4, 5–9, 10–14, 15–19) ---
-    bands_detail = get_childteen_bands(
-        df, geo_col,
-        as_of_date=(as_of_date if as_of_date is not None else None)
-    )
+    # --- Children by detailed age bands (raw 2021 AND optionally age-adjusted) ---
+    bands_raw = get_childteen_bands(df, geo_col, as_of_date=None)
+    bands_adj = get_childteen_bands(df, geo_col, as_of_date=as_of_date) if as_of_date is not None else None
+
     def _fmt_count(x):
         try:
             return f"{int(round(float(x))):,}"
         except Exception:
             return "0"
 
-    child_band_lines = []
-    # Keep order / labels consistent with UI
+    parts = []
     for lab, short in [
         ("0 to 4 years", "0–4"),
         ("5 to 9 years", "5–9"),
         ("10 to 14 years", "10–14"),
         ("15 to 19 years", "15–19"),
     ]:
-        val = bands_detail.get(lab, 0.0) if bands_detail else 0.0
-        child_band_lines.append(f"{short}: ~{_fmt_count(val)}")
+        raw_v = bands_raw.get(lab, 0.0) if bands_raw else 0.0
+        s = f"{short}: ~{_fmt_count(raw_v)}"
+        if bands_adj is not None:
+            adj_v = bands_adj.get(lab, 0.0)
+            s += f" (aged: ~{_fmt_count(adj_v)})"
+    parts.append(s)
 
-    # Only show the line if there’s at least some non-zero data
-    child_bands_block = " ; ".join(child_band_lines) if any(
-        (bands_detail.get(k, 0.0) or 0.0) > 0 for k in (
+    child_bands_block = " ; ".join(parts) if any(
+        (bands_raw.get(k, 0.0) or 0.0) > 0 for k in (
             "0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"
         )
     ) else None
+
 
     single_parent_share = _best_numeric_from(
         df, topic_regex="Household type|Household and dwelling characteristics",
@@ -1471,32 +1473,6 @@ else:
             file_name=f"{(place_guess or 'community')}_deep_analysis_prompt.txt",
             mime="text/plain",
         )
-
-with st.expander("Debug: child band sources (counts only)", expanded=False):
-    # Compute a local geo/value column (handles both single- and multi-file cases)
-    local_geo = pick_geo_col(cleaned_df)
-    st.caption(f"Using value column: **{local_geo or '—'}**")
-
-    bands = ["0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"]
-    for lab in bands:
-        sub = cleaned_df[
-            cleaned_df["Topic"].str.contains("Age characteristics", case=False, na=False)
-            & cleaned_df["Characteristic"].str.contains(lab, case=False, na=False)
-        ].copy()
-
-        # flag possible percent rows for visibility
-        sub["maybe_percent_row"] = sub["Characteristic"].str.contains(
-            r"\(\%\)|percent|percentage|proportion|% of", case=False, na=False
-        )
-
-        # choose columns to display safely
-        show_cols = ["Topic", "Characteristic", "maybe_percent_row"]
-        if local_geo and local_geo in sub.columns:
-            show_cols.insert(2, local_geo)
-
-        st.write(f"**{lab}**")
-        st.dataframe(sub[show_cols], use_container_width=True)
-
 
     # ---- Filtered Report ----
     st.subheader("Filtered Report")
