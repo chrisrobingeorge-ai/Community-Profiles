@@ -83,6 +83,43 @@ def load_statcan_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
 
     return df
 
+import re
+
+def _characteristic_sort_key(label: str) -> tuple:
+    """
+    Return a tuple we can sort on that keeps natural human order for things like:
+    - '0 to 4 years', '5 to 9 years', '10 to 14 years', ...
+    - '$0 to $9,999', '$10,000 to $19,999', ...
+    - 'Less than 5 minutes', '5 to 14 minutes', '15 to 29 minutes', etc.
+
+    Strategy:
+    - Pull the first number in the string.
+    - If found, use that number as primary key.
+    - If there's a second number, use it as secondary key.
+    - If no numbers at all, fall back to the text itself.
+    """
+
+    if label is None:
+        return (9999999, 9999999, "")  # push weird/blank to the bottom
+
+    text = str(label)
+
+    # find all numbers in order
+    nums = re.findall(r"\d+", text)
+    if nums:
+        first_num = int(nums[0])
+        second_num = int(nums[1]) if len(nums) > 1 else first_num
+        return (first_num, second_num, text.lower())
+
+    # special catch for '85 years and over', '65 years and over', etc.
+    m_over = re.match(r"^\s*(\d+)\s+years\s+and\s+over", text, flags=re.IGNORECASE)
+    if m_over:
+        n = int(m_over.group(1))
+        return (n, n+1000, text.lower())
+
+    # if we can't get any numbers, give it a high key but still stable
+    return (9999998, 9999998, text.lower())
+
 def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "Topic" not in df.columns or "Characteristic" not in df.columns:
         st.error(
@@ -108,11 +145,17 @@ def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
     filtered = df[keep_mask].copy()
 
     # sort nicely for display
+    # build a stable numeric-aware sort per Topic_norm
+    filtered["__char_sort_key__"] = filtered["Characteristic"].apply(_characteristic_sort_key)
+
     filtered.sort_values(
-        by=["Topic_norm", "Characteristic"],
+        by=["Topic_norm", "__char_sort_key__"],
         inplace=True,
         ignore_index=True,
     )
+
+    # drop helper col from the version we return
+    filtered.drop(columns=["__char_sort_key__"], inplace=True, errors="ignore")
 
     return filtered
 
