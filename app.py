@@ -1,9 +1,9 @@
-import io
-import os
-import re
-import pandas as pd
-from datetime import date
+import io, os, re
+from datetime import date, datetime
 from collections import OrderedDict
+
+import pandas as pd
+import streamlit as st  # <-- this must be above st.set_page_config
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
