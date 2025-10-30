@@ -928,6 +928,25 @@ def derive_indigenous_from_ethnic_origin(
         out = out.sort_values(by="Count", ascending=False, kind="mergesort").reset_index(drop=True)
     return out
 
+def build_indigenous_table(df: pd.DataFrame, geo_col: str, pop_val_num: float | None):
+    """
+    Safe wrapper around derive_indigenous_from_ethnic_origin.
+    Returns a DataFrame with columns ['Group','Count','Percent'] or
+    an empty DataFrame if we can't build it.
+    """
+    try:
+        tbl = derive_indigenous_from_ethnic_origin(
+            df,
+            geo_col=geo_col,
+            pop_val_num=pop_val_num
+        )
+        if tbl is None:
+            return pd.DataFrame(columns=["Group", "Count", "Percent"])
+        return tbl
+    except Exception:
+        # If anything goes sideways (missing topic, weird column), fail soft.
+        return pd.DataFrame(columns=["Group", "Count", "Percent"])
+
 def summarize_indigenous_nations_from_ethnic(df: pd.DataFrame) -> list[str]:
     """
     Return a cleaned list of Nation/People names (no counts) based on the
