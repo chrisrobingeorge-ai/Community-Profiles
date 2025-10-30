@@ -654,6 +654,58 @@ def age_bands_adjust_to_date(bands: OrderedDict, as_of: date) -> OrderedDict:
 
 def sum_bands(bands: OrderedDict, wanted_labels: list[str]) -> float:
     return float(sum(bands.get(l, 0.0) for l in wanted_labels))
+def get_childteen_bands(df: pd.DataFrame, geo_col: str, as_of_date: date | None):
+    """
+    Return a dict with counts for:
+      '0 to 4 years'
+      '5 to 9 years'
+      '10 to 14 years'
+      '15 to 19 years'
+
+    Uses cohort-aging if as_of_date is provided.
+    Falls back to 2021 raw values otherwise.
+    """
+
+    wanted_labels = [
+        "0 to 4 years",
+        "5 to 9 years",
+        "10 to 14 years",
+        "15 to 19 years",
+    ]
+
+    # OPTION A: user chose "age forward"
+    if as_of_date is not None:
+        # build full 5-year bands from 2021
+        bands_2021 = extract_age_bands(df, geo_col)
+        # age them forward to as_of_date
+        bands_adj = age_bands_adjust_to_date(bands_2021, as_of=as_of_date)
+
+        result = {}
+        for lab in wanted_labels:
+            result[lab] = float(bands_adj.get(lab, 0.0))
+        return result
+
+    # OPTION B: use raw 2021 numbers directly from the CSV
+    result = {}
+    for lab in wanted_labels:
+        # try exact match first
+        row = df[
+            (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
+            (df["Characteristic"].str.fullmatch(rf"\s*{lab}\s*", case=False, na=False))
+        ]
+        if row.empty:
+            # lose the strictness, try contains
+            row = df[
+                (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
+                (df["Characteristic"].str.contains(rf"{lab}", case=False, na=False))
+            ]
+
+        if row.empty:
+            result[lab] = 0.0
+        else:
+            result[lab] = float(_coerce_number(row.iloc[0][geo_col]) or 0.0)
+
+    return result
 
 import re
 
@@ -801,59 +853,103 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
             )
 
     # -------------------------------------------------
-    # 2. Age structure (kids, seniors) with optional aging to 'as_of_date'
+    # 2. Age structure / youth pipeline
     # -------------------------------------------------
-    kids_bands = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
-    seniors_bands = ["65 to 69 years", "70 to 74 years", "75 to 79 years", "80 to 84 years", "85 years and over"]
+    # We care about program-facing cohorts:
+    #   0–4  (pre-K / movement / parent-child)
+    #   5–9  (elementary, Discover Dance / rec classes)
+    #   10–14 (tweens/early teens, after school programs, belonging work)
+    #   15–19 (older teens, leadership / mentorship / transition)
+    #
+    # We also still want to comment on seniors for grandparents / caregivers.
 
-    kids_val = None
-    seniors_val = None
+    # grab band counts, aged-forward if requested
+    band_counts = get_childteen_bands(df, geo_col, as_of_date)
+
+    # seniors (65+) we'll keep the old logic, since it's still useful context
+    seniors_bands = [
+        "65 to 69 years",
+        "70 to 74 years",
+        "75 to 79 years",
+        "80 to 84 years",
+        "85 years and over",
+    ]
 
     if as_of_date is not None:
-        # Use cohort-aging to adjust age bands to the chosen date
-        geo_col = pick_geo_col(df)
-        age_bands = extract_age_bands(df, geo_col)
-        adj = age_bands_adjust_to_date(age_bands, as_of=as_of_date)
-        kids_val = sum_bands(adj, kids_bands)
-        seniors_val = sum_bands(adj, seniors_bands)
+        # senior counts from aged-forward bands
+        all_bands_now = extract_age_bands(df, geo_col)
+        all_bands_now = age_bands_adjust_to_date(all_bands_now, as_of=as_of_date)
+        seniors_val = sum_bands(all_bands_now, seniors_bands)
     else:
-        # Use 2021 raw values
-        kids_val = _best_numeric_from(
-            df, topic_regex="Age characteristics", char_regex=r"\b0\s*to\s*14\s*years\b", geo_col=geo_col
-        )
+        # seniors from 2021 snapshot
         seniors_val = _best_numeric_from(
             df, topic_regex="Age characteristics", char_regex=r"65\s*years", geo_col=geo_col
         )
 
-    kids_pct = None
+    # compute percentages of total pop for each youth band + seniors
+    band_pct = {}
+    for label, count in band_counts.items():
+        if pop_val_num and pop_val_num > 0 and count > 0 and count < pop_val_num:
+            band_pct[label] = (count / pop_val_num) * 100.0
+        else:
+            band_pct[label] = None
+
     seniors_pct = None
-    if pop_val_num and pop_val_num > 0:
-        if kids_val and 0 < kids_val < pop_val_num:
-            kids_pct = (kids_val / pop_val_num) * 100.0
-        if seniors_val and 0 < seniors_val < pop_val_num:
-            seniors_pct = (seniors_val / pop_val_num) * 100.0
+    if pop_val_num and pop_val_num > 0 and seniors_val and seniors_val < pop_val_num:
+        seniors_pct = (seniors_val / pop_val_num) * 100.0
 
+    # Build readable text chunks for each band that actually exists
+    age_lines = []
 
-    age_bits = []
-    if kids_pct and kids_pct >= 1.0:
-        age_bits.append(f"Children (0–14) are about {kids_pct:.1f}% of the population")
-    elif kids_val and kids_val > 0:
-        age_bits.append("There is a meaningful number of children (0–14)")
+    def fmt_band(label, friendly_name):
+        cnt = band_counts.get(label, 0.0)
+        pct = band_pct.get(label)
+        if cnt and cnt > 0:
+            if pct and pct >= 1.0:
+                return f"{int(round(cnt,0))} {friendly_name} (~{pct:.1f}% of the population)"
+            else:
+                return f"{int(round(cnt,0))} {friendly_name}"
+        return None
 
-    if seniors_pct and seniors_pct >= 1.0:
-        age_bits.append(f"older adults (65+) are about {seniors_pct:.1f}%")
-    elif seniors_val and seniors_val > 0:
-        age_bits.append("there is also a visible older adult population (65+)")
+    piece_0_4   = fmt_band("0 to 4 years",   "children age 0–4")
+    piece_5_9   = fmt_band("5 to 9 years",   "children age 5–9")
+    piece_10_14 = fmt_band("10 to 14 years", "youth age 10–14")
+    piece_15_19 = fmt_band("15 to 19 years", "teens age 15–19")
 
-    if age_bits:
-        if len(age_bits) == 2:
+    for p in [piece_0_4, piece_5_9, piece_10_14, piece_15_19]:
+        if p:
+            age_lines.append(p)
+
+    seniors_text = None
+    if seniors_val and seniors_val > 0:
+        if seniors_pct and seniors_pct >= 1.0:
+            seniors_text = (
+                f"{int(round(seniors_val,0))} older adults 65+ (~{seniors_pct:.1f}%)."
+            )
+        else:
+            seniors_text = f"{int(round(seniors_val,0))} older adults 65+."
+
+    if age_lines:
+        # Join the youth/teen bands into one readable sentence
+        if len(age_lines) == 1:
             lines.append(
-                f"{age_bits[0]}, and {age_bits[1]}. We should expect to serve a lot of school-age kids and also grandparents / older caregivers in the same community spaces."
+                "Youth population: " + age_lines[0] + "."
             )
         else:
             lines.append(
-                f"{age_bits[0]}. We should expect to serve a large number of school-age kids in this community."
+                "Youth population: "
+                + ", ".join(age_lines[:-1])
+                + ", and "
+                + age_lines[-1]
+                + "."
             )
+
+    if seniors_text:
+        lines.append(
+            "There is also a visible older adult / grandparent population: " + seniors_text +
+            " This matters because grandparents often do school pickup / childcare in smaller communities."
+        )
+
 
     # -------------------------------------------------
     # 3. Household structure / stability
