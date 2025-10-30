@@ -22,42 +22,28 @@ st.caption(
 # Selected sections / topics you care about
 # ------------------------------------------------
 TARGET_TOPICS = [
-    "Population and dwellings",
     "Age characteristics",
     "Household and dwelling characteristics",
     "Household type",
     "Income of households in 2020",
     "Low income and income inequality in 2020",
     "Knowledge of official languages",
-    "First official language spoken",
     "Mother tongue",
     "Language spoken most often at home",
-    "Immigrant status and period of immigration",
-    "Selected places of birth for the immigrant population",
     "Selected places of birth for the recent immigrant population",
     "Ethnic origin",
     "Ethnic or cultural origin",
     "Visible minority",
-    "Secondary (high) school diploma or equivalency certificate",
     "Highest certificate, diploma or degree",
     "Mobility status 1 year ago",
-    "Main mode of commuting",
     "Commuting duration",
-    "Children eligible for instruction in the minority official language",
-    "Eligibility and instruction in the minority official language for school-aged children",
 ]
 
 # Sometimes these aren't in the Topic column, but appear in Characteristic instead,
 # so we also match using keywords inside the Characteristic column:
 TARGET_CHARACTERISTIC_KEYWORDS = [
-    "Secondary (high) school diploma or equivalency certificate",
     "Highest certificate, diploma or degree",
-    "Mobility status 1 year ago",
-    "Mobility status 5 years ago",
-    "Main mode of commuting",
     "Commuting duration",
-    "Children eligible for instruction in the minority official language",
-    "Eligibility and instruction in the minority official language for school-aged children",
 ]
 
 # ------------------------------------------------
