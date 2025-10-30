@@ -1,11 +1,14 @@
 import io
 import os
 import re
-from collections import OrderedDict
-from datetime import date, datetime
-
 import pandas as pd
-import streamlit as st
+from datetime import date
+from collections import OrderedDict
+
+from reportlab.lib.pagesizes import LETTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # ------------------------------------------------
 # Streamlit page config
@@ -1566,30 +1569,139 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.units import inch
 
-def create_summary_pdf(summary_text: str, community_name: str) -> BytesIO:
-    """
-    Builds a simple PDF containing the Community Profile Summary text.
-    """
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter,
-                            rightMargin=72, leftMargin=72,
-                            topMargin=72, bottomMargin=72)
+from reportlab.lib.pagesizes import LETTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+import io
+import pandas as pd
+from bs4 import BeautifulSoup
 
+def create_full_pdf(summary_text: str, place_name: str, cleaned_df: pd.DataFrame) -> bytes:
+    """
+    Build a single PDF that includes:
+    1. Title + place_name
+    2. Narrative summary (multi-paragraph, human-readable)
+    3. All topic tables (Characteristic + values) with zero-only rows already removed
+    """
+
+    # --- Prep styles ---
     styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="HeadingPlace",
+        parent=styles["Heading1"],
+        fontSize=16,
+        leading=20,
+        spaceAfter=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="SectionHeader",
+        parent=styles["Heading2"],
+        fontSize=12,
+        leading=15,
+        spaceBefore=12,
+        spaceAfter=6,
+        textColor=colors.black,
+    ))
+    styles.add(ParagraphStyle(
+        name="BodyTextTight",
+        parent=styles["BodyText"],
+        fontSize=10,
+        leading=13,
+        spaceAfter=6,
+    ))
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=LETTER,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=36,
+        bottomMargin=36,
+    )
+
     story = []
 
-    # Title
-    story.append(Paragraph(f"Community Profile Summary — {community_name}", styles['Title']))
-    story.append(Spacer(1, 0.25 * inch))
+    # --- 1. Title ---
+    safe_place = place_name or "Community Profile"
+    story.append(Paragraph(f"Community Profile Summary for {safe_place}", styles["HeadingPlace"]))
+    story.append(Spacer(1, 6))
 
-    # Split the summary into paragraphs
-    for para in summary_text.split("\n\n"):
-        story.append(Paragraph(para, styles['BodyText']))
-        story.append(Spacer(1, 0.15 * inch))
+    # --- 2. Narrative summary text ---
+    # summary_text currently comes back as multiple sections separated by double newlines.
+    # We'll split by blank lines and make each paragraph its own <Paragraph>.
+    for block in summary_text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        story.append(Paragraph(block, styles["BodyTextTight"]))
+    story.append(PageBreak())
 
+    # --- 3. Data tables by topic ---
+    # We'll mirror what render_report() shows: topic sections, rows without all-zero values.
+    topic_col = "Topic_norm" if "Topic_norm" in cleaned_df.columns else "Topic"
+
+    # figure out the value columns we actually care about
+    value_cols = [
+        c for c in cleaned_df.columns
+        if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")
+    ]
+
+    def row_has_nonzero_data_pdf(row: pd.Series) -> bool:
+        for c in value_cols:
+            if c not in row:
+                continue
+            num = _coerce_number(row[c])
+            if num is not None and num > 0:
+                return True
+        return False
+
+    # group and render
+    for topic, sub in cleaned_df.groupby(topic_col, dropna=False):
+        # filter out zero-only rows (same rule as the app UI / CSV export)
+        rows_keep = [r for _, r in sub.iterrows() if row_has_nonzero_data_pdf(r)]
+        if not rows_keep:
+            continue
+
+        pretty_df = pd.DataFrame(rows_keep)[["Characteristic"] + value_cols].reset_index(drop=True)
+
+        # topic header
+        story.append(Paragraph(str(topic), styles["SectionHeader"]))
+
+        # build table data: header row + each row’s cells
+        table_data = [pretty_df.columns.tolist()]
+        for _, r in pretty_df.iterrows():
+            table_data.append([str(r[c]) if pd.notna(r[c]) else "" for c in pretty_df.columns])
+
+        t = Table(table_data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f5f5f5")),
+            ("TEXTCOLOR",   (0,0), (-1,0), colors.black),
+            ("FONTNAME",    (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",    (0,0), (-1,0), 8),
+
+            ("FONTSIZE",    (0,1), (-1,-1), 8),
+            ("LEADING",     (0,1), (-1,-1), 10),
+
+            ("GRID",        (0,0), (-1,-1), 0.25, colors.HexColor("#999999")),
+            ("ALIGN",       (1,1), (-1,-1), "RIGHT"),  # keep numbers right-aligned
+            ("VALIGN",      (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING", (0,0), (-1,-1), 4),
+            ("RIGHTPADDING",(0,0), (-1,-1), 4),
+            ("TOPPADDING",  (0,0), (-1,-1), 2),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+        ]))
+
+        story.append(t)
+        story.append(Spacer(1, 12))
+
+    # build PDF
     doc.build(story)
-    buffer.seek(0)
-    return buffer
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
 
 # ------------------------------------------------
 # UI
@@ -1634,14 +1746,19 @@ else:
     st.write(summary_text)
     # ---- PDF Download Button ----
     if summary_text:
-        pdf_buffer = create_summary_pdf(summary_text, place_guess or "Community Profile")
-        st.download_button(
-            label="📄 Download Summary as PDF",
-            data=pdf_buffer,
-            file_name=f"{(place_guess or 'community_profile').replace(' ', '_').lower()}_summary.pdf",
-            mime="application/pdf",
+        pdf_bytes = create_full_pdf(
+            summary_text=summary_text,
+            place_name=place_guess or "Community Profile",
+            cleaned_df=cleaned_df,
         )
     
+        st.download_button(
+            label="📄 Download Full Report (PDF)",
+            data=pdf_bytes,
+            file_name=f"{(place_guess or 'community_profile').replace(' ', '_').lower()}_report.pdf",
+            mime="application/pdf",
+        )
+
     # 7) Filtered table view (collapsible topics, zero-row suppression)
     st.subheader("Filtered Report")
     render_report(cleaned_df)
