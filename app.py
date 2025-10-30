@@ -161,7 +161,7 @@ def render_report(df: pd.DataFrame):
 
         pretty_df = pd.DataFrame(filtered_rows)[["Characteristic"] + value_cols].reset_index(drop=True)
 
-        with st.expander(f"📂 {topic}", expanded=True):
+        with st.expander(f"📂 {topic}", expanded=False):
             st.dataframe(pretty_df, use_container_width=True)
 
 def drop_zero_only_rows(df: pd.DataFrame) -> pd.DataFrame:
