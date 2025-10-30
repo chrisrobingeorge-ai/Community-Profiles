@@ -1132,6 +1132,98 @@ def create_full_pdf(summary_text: str, place_name: str, cleaned_df: pd.DataFrame
     buffer.close()
     return pdf_bytes
 
+def build_chatgpt_prompt(
+    summary_text: str,
+    cleaned_df: pd.DataFrame,
+    place_name: str | None,
+    as_of_date: date | None,
+) -> tuple[str, str]:
+    """
+    Returns (prompt_text_for_copy, full_prompt_txt_download).
+    The 'copy' version trims the table if very long; the 'download' version includes all rows.
+    """
+    # Identify value column (the geo column)
+    geo_col = pick_geo_col(cleaned_df)
+    topic_col = "Topic_norm" if "Topic_norm" in cleaned_df.columns else "Topic"
+    place = place_name or "Community"
+
+    # Population (best-effort)
+    pop_rows = cleaned_df[
+        (cleaned_df[topic_col].str.contains("Population and dwellings", case=False, na=False)) &
+        (cleaned_df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
+    ]
+    pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if (geo_col and not pop_rows.empty) else None
+
+    # Top languages & Indigenous groups (re-use your logic)
+    top_langs = _top_n(extract_significant_languages(cleaned_df, geo_col, pop_val_num), 3) if geo_col else []
+    indig_tbl = build_indigenous_table(cleaned_df, geo_col, pop_val_num) if geo_col else pd.DataFrame()
+    indig_list = indig_tbl["Group"].head(4).tolist() if (indig_tbl is not None and not indig_tbl.empty) else []
+
+    # Compact table: Topic, Characteristic, Value
+    trimmed = drop_zero_only_rows(cleaned_df)
+    cols = [c for c in [topic_col, "Characteristic", geo_col] if c]
+    compact = trimmed[cols].rename(columns={topic_col: "Topic", geo_col: "Value"}) if cols else pd.DataFrame()
+
+    # Limit paste size to keep it friendly
+    MAX_ROWS_FOR_COPY = 300
+    compact_for_copy = compact.head(MAX_ROWS_FOR_COPY) if len(compact) > MAX_ROWS_FOR_COPY else compact
+
+    # Build CSV text (no index, UTF-8, simple)
+    csv_copy = compact_for_copy.to_csv(index=False)
+    csv_full = compact.to_csv(index=False)
+
+    # Format the instruction prompt
+    header_lines = []
+    header_lines.append(f"Community: {place}")
+    if as_of_date:
+        header_lines.append(f"As-of date for age adjustments: {as_of_date.isoformat()}")
+    if pop_val_num:
+        header_lines.append(f"Population (2021): {int(pop_val_num)}")
+    if top_langs:
+        header_lines.append("Notable home languages (non-English/French): " + ", ".join(top_langs))
+    if indig_list:
+        header_lines.append("Indigenous Nations/Peoples (from ethnic origin table): " + ", ".join(indig_list))
+
+    instructions = (
+        "You are a community program designer and evaluator. Using the narrative summary and the table below, "
+        "produce a deeper analysis and program impact assessment for Alberta Ballet’s ‘Growing Up Strong’ campaign. "
+        "Deliver:\n"
+        "1) Key insights about children/teens, caregivers, cost barriers, mobility/commute, and language/ trust.\n"
+        "2) Recommended delivery model (sites, schedule, seat targets by age band), including rationale tied to the data.\n"
+        "3) Equity considerations (single-caregiver households, renters, low-income indicators), with concrete mitigations.\n"
+        "4) Indigenous partnership approach (co-presentation/roles), language access steps, and caregiver engagement tactics.\n"
+        "5) A 90-day learning plan with 3–5 measurable indicators aligned to Growing Up Strong pillars "
+        "(Access to Tickets; Professional Training School; Recreational Classes; Community Programs).\n"
+        "6) Risks & mitigations, plus assumptions and open questions to validate with local partners.\n\n"
+        "Use short paragraphs and bullet points where helpful. Keep it practical and decision-ready."
+    )
+
+    # Assemble copy-prompt (trimmed CSV)
+    prompt_copy = (
+        "=== CONTEXT ===\n"
+        + "\n".join(header_lines) + "\n\n"
+        + "=== NARRATIVE SUMMARY ===\n"
+        + summary_text.strip() + "\n\n"
+        + "=== INSTRUCTIONS ===\n"
+        + instructions + "\n\n"
+        + "=== DATA (CSV) ===\n"
+        + csv_copy
+        + ("\n\n[Note: table truncated for copy. Full table is in the attached/downloaded TXT.]" if len(compact) > MAX_ROWS_FOR_COPY else "")
+    )
+
+    # Assemble full downloadable prompt (full CSV)
+    prompt_full = (
+        "=== CONTEXT ===\n"
+        + "\n".join(header_lines) + "\n\n"
+        + "=== NARRATIVE SUMMARY ===\n"
+        + summary_text.strip() + "\n\n"
+        + "=== INSTRUCTIONS ===\n"
+        + instructions + "\n\n"
+        + "=== DATA (CSV) ===\n"
+        + csv_full
+    )
+
+    return prompt_copy, prompt_full
 
 # ------------------------------------------------
 # UI
@@ -1177,6 +1269,31 @@ else:
             file_name=f"{(place_guess or 'community_profile').replace(' ', '_').lower()}_report.pdf",
             mime="application/pdf",
         )
+
+        # --- Deeper analysis prompt for ChatGPT ---
+    st.subheader("Deeper analysis (copy-ready prompt)")
+
+    # Requires the helper build_chatgpt_prompt(...) defined above the UI section.
+    prompt_copy, prompt_full = build_chatgpt_prompt(
+        summary_text=summary_text or "",
+        cleaned_df=cleaned_df,
+        place_name=place_guess,
+        as_of_date=(as_of if use_age_adjust else None),
+    )
+
+    st.caption(
+        "Copy this prompt into ChatGPT to get a deeper analysis and program impact assessment "
+        "tailored to Growing Up Strong."
+    )
+    st.code(prompt_copy, language="markdown")
+
+    st.download_button(
+        label="⬇️ Download full prompt (TXT with complete table)",
+        data=prompt_full.encode("utf-8"),
+        file_name=f"{(place_guess or 'community')}_deep_analysis_prompt.txt",
+        mime="text/plain",
+        help="Use this if the table is long; the code block above shows a trimmed version for quick copy/paste."
+    )
 
     st.subheader("Filtered Report")
     render_report(cleaned_df)
