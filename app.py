@@ -1632,15 +1632,15 @@ else:
         place_name=place_guess,
     )
     st.write(summary_text)
-# ---- PDF Download Button ----
-if summary_text:
-    pdf_buffer = create_summary_pdf(summary_text, place_name or "Community Profile")
-    st.download_button(
-        label="📄 Download Summary as PDF",
-        data=pdf_buffer,
-        file_name=f"{place_name or 'community_profile'}_summary.pdf",
-        mime="application/pdf",
-    )
+    # ---- PDF Download Button ----
+    if summary_text:
+        pdf_buffer = create_summary_pdf(summary_text, place_guess or "Community Profile")
+        st.download_button(
+            label="📄 Download Summary as PDF",
+            data=pdf_buffer,
+            file_name=f"{(place_guess or 'community_profile').replace(' ', '_').lower()}_summary.pdf",
+            mime="application/pdf",
+        )
     
     # 7) Filtered table view (collapsible topics, zero-row suppression)
     st.subheader("Filtered Report")
