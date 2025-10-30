@@ -41,7 +41,6 @@ TARGET_TOPICS = [
     "Secondary (high) school diploma or equivalency certificate",
     "Highest certificate, diploma or degree",
     "Mobility status 1 year ago",
-    "Mobility status 5 years ago",
     "Main mode of commuting",
     "Commuting duration",
     "Children eligible for instruction in the minority official language",
@@ -1137,6 +1136,39 @@ def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 import re
 
+def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    StatCan often repeats the same 'Characteristic' twice in a row:
+    - first row has counts + %
+    - second row re-states % only
+    We only need the first one.
+
+    We define "duplicate" as: same topic label (Topic_norm if available, else Topic)
+    AND same Characteristic text. We keep the first occurrence.
+    """
+
+    if df.empty:
+        return df
+
+    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
+
+    # We'll build rows we keep in order
+    seen = set()
+    keep_rows = []
+
+    for idx, row in df.iterrows():
+        key = (str(row.get(topic_col, "")).strip(),
+               str(row.get("Characteristic", "")).strip())
+
+        if key in seen:
+            # already saw this Topic+Characteristic → likely the "percent only" duplicate
+            continue
+        seen.add(key)
+        keep_rows.append(idx)
+
+    out = df.loc[keep_rows].copy().reset_index(drop=True)
+    return out
+
 def resolve_topic_column(df: pd.DataFrame) -> pd.DataFrame:
     """
     Create Topic_norm by:
@@ -1238,7 +1270,12 @@ else:
     # 1) Load + filter
     raw_df = load_statcan_csv(uploaded_file)
     cleaned_df = filter_relevant_rows(raw_df)
-    cleaned_df = prune_columns(cleaned_df)   # <— remove Flag/Symbol/Note/empty/dup columns
+    
+    # NEW: remove duplicate "percent-only" twins
+    cleaned_df = collapse_duplicate_characteristics(cleaned_df)
+    
+    # already-existing cleanup of junk columns and empty flag columns
+    cleaned_df = prune_columns(cleaned_df)
 
     # 2) Sidebar controls (age-to-date)
     with st.sidebar:
