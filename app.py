@@ -1472,21 +1472,25 @@ else:
             mime="text/plain",
         )
 
-    with st.expander("Debug: child band sources (counts only)", expanded=False):
+with st.expander("Debug: child band sources (counts only)", expanded=False):
     st.caption(f"Using value column: **{geo_col}**")
+
     for lab in ["0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"]:
         sub = cleaned_df[
             cleaned_df["Topic"].str.contains("Age characteristics", case=False, na=False)
             & cleaned_df["Characteristic"].str.contains(lab, case=False, na=False)
         ].copy()
+
         # flag possible percent rows for visibility
         sub["maybe_percent_row"] = sub["Characteristic"].str.contains(
             r"\(\%\)|percent|percentage|proportion|% of", case=False, na=False
         )
+
         # show just the relevant columns
         show_cols = ["Topic", "Characteristic", geo_col, "maybe_percent_row"]
         st.write(f"**{lab}**")
         st.dataframe(sub[show_cols], use_container_width=True)
+
 
     # ---- Filtered Report ----
     st.subheader("Filtered Report")
