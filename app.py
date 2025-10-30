@@ -525,18 +525,49 @@ AGE_BANDS_ORDER = [
 
 
 def _find_age_value(df, geo_col, band_label):
-    row = df[
-        (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
-        (df["Characteristic"].str.fullmatch(rf"\s*{band_label}\s*", case=False, na=False))
-    ]
-    if row.empty:
-        row = df[
-            (df["Topic"].str.contains(r"Age characteristics", case=False, na=False)) &
-            (df["Characteristic"].str.contains(rf"{band_label}", case=False, na=False))
-        ]
-    if row.empty:
+    """
+    Return the *count* for the given age band label, preferring count rows over percent rows.
+    Fallback: choose the largest numeric among matches (counts are typically larger than percents).
+    """
+    # Narrow to Age topic
+    sub = df[
+        df["Topic"].str.contains(r"Age characteristics", case=False, na=False)
+    ].copy()
+
+    # Try exact label first, else contains (handles indenting/spacing)
+    exact = sub[sub["Characteristic"].str.fullmatch(rf"\s*{band_label}\s*", case=False, na=False)]
+    if exact.empty:
+        cand = sub[sub["Characteristic"].str.contains(rf"{band_label}", case=False, na=False)]
+    else:
+        cand = exact
+
+    if cand.empty:
         return 0.0
-    return _coerce_number(row.iloc[0][geo_col]) or 0.0
+
+    # Prefer rows that do NOT look like percent rows
+    def is_percent_label(s: str) -> bool:
+        s = s.lower()
+        return ("(%)" in s) or (" percent" in s) or ("percentage" in s) or ("% of" in s)
+
+    # Build candidates (value, is_percent, label)
+    candidates = []
+    for _, r in cand.iterrows():
+        v = _coerce_number(r.get(geo_col))
+        if v is None or v <= 0:
+            continue
+        lbl = str(r.get("Characteristic", ""))
+        candidates.append((float(v), is_percent_label(lbl), lbl))
+
+    if not candidates:
+        return 0.0
+
+    # 1) Prefer non-percent labels; pick the largest among them
+    non_pct = [v for v in candidates if not v[1]]
+    if non_pct:
+        return max(non_pct, key=lambda t: t[0])[0]
+
+    # 2) Else pick the largest overall
+    return max(candidates, key=lambda t: t[0])[0]
 
 
 def extract_age_bands(df, geo_col) -> OrderedDict:
