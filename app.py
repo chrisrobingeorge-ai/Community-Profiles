@@ -1473,9 +1473,12 @@ else:
         )
 
 with st.expander("Debug: child band sources (counts only)", expanded=False):
-    st.caption(f"Using value column: **{geo_col}**")
+    # Compute a local geo/value column (handles both single- and multi-file cases)
+    local_geo = pick_geo_col(cleaned_df)
+    st.caption(f"Using value column: **{local_geo or '—'}**")
 
-    for lab in ["0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"]:
+    bands = ["0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"]
+    for lab in bands:
         sub = cleaned_df[
             cleaned_df["Topic"].str.contains("Age characteristics", case=False, na=False)
             & cleaned_df["Characteristic"].str.contains(lab, case=False, na=False)
@@ -1486,8 +1489,11 @@ with st.expander("Debug: child band sources (counts only)", expanded=False):
             r"\(\%\)|percent|percentage|proportion|% of", case=False, na=False
         )
 
-        # show just the relevant columns
-        show_cols = ["Topic", "Characteristic", geo_col, "maybe_percent_row"]
+        # choose columns to display safely
+        show_cols = ["Topic", "Characteristic", "maybe_percent_row"]
+        if local_geo and local_geo in sub.columns:
+            show_cols.insert(2, local_geo)
+
         st.write(f"**{lab}**")
         st.dataframe(sub[show_cols], use_container_width=True)
 
