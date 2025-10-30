@@ -713,6 +713,34 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     kids_pct, kids_cnt = _percent_or_none(kids_val, pop_val_num)
     teens_pct, teens_cnt = _percent_or_none(teens_val, pop_val_num)
     seniors_pct, seniors_cnt = _percent_or_none(seniors_val, pop_val_num)
+    # --- NEW: Children by detailed age bands (0–4, 5–9, 10–14, 15–19) ---
+    bands_detail = get_childteen_bands(
+        df, geo_col,
+        as_of_date=(as_of_date if as_of_date is not None else None)
+    )
+    def _fmt_count(x):
+        try:
+            return f"{int(round(float(x))):,}"
+        except Exception:
+            return "0"
+
+    child_band_lines = []
+    # Keep order / labels consistent with UI
+    for lab, short in [
+        ("0 to 4 years", "0–4"),
+        ("5 to 9 years", "5–9"),
+        ("10 to 14 years", "10–14"),
+        ("15 to 19 years", "15–19"),
+    ]:
+        val = bands_detail.get(lab, 0.0) if bands_detail else 0.0
+        child_band_lines.append(f"{short}: ~{_fmt_count(val)}")
+
+    # Only show the line if there’s at least some non-zero data
+    child_bands_block = " ; ".join(child_band_lines) if any(
+        (bands_detail.get(k, 0.0) or 0.0) > 0 for k in (
+            "0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"
+        )
+    ) else None
 
     single_parent_share = _best_numeric_from(
         df, topic_regex="Household type|Household and dwelling characteristics",
@@ -910,6 +938,10 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     final_sections = [
         f"COMMUNITY PROFILE SUMMARY — {community_label.upper()}",
         "SNAPSHOT & SCALE: " + snapshot_block,
+    ]
+    if child_bands_block:
+        final_sections.append("CHILD POPULATION BY AGE BAND: " + child_bands_block)
+    final_sections += [
         "YOUTH & CAREGIVERS: " + youth_block,
         "HOUSEHOLD REALITY & COST: " + hh_block,
         "LANGUAGE, TRUST & INDIGENOUS PARTNERSHIPS: " + lang_block,
