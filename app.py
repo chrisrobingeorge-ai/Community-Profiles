@@ -526,49 +526,43 @@ AGE_BANDS_ORDER = [
 
 def _find_age_value(df, geo_col, band_label):
     """
-    Return the *count* for the given age band label, preferring count rows over percent rows.
-    Fallback: choose the largest numeric among matches (counts are typically larger than percents).
+    Return the *count* for the age band. Ignore percent/proportion rows.
+    Fallback: if multiple count rows remain, take the largest numeric.
     """
     # Narrow to Age topic
-    sub = df[
-        df["Topic"].str.contains(r"Age characteristics", case=False, na=False)
-    ].copy()
+    sub = df[df["Topic"].str.contains(r"Age characteristics", case=False, na=False)].copy()
 
-    # Try exact label first, else contains (handles indenting/spacing)
+    # Candidate label matches (exact first, then contains)
     exact = sub[sub["Characteristic"].str.fullmatch(rf"\s*{band_label}\s*", case=False, na=False)]
-    if exact.empty:
-        cand = sub[sub["Characteristic"].str.contains(rf"{band_label}", case=False, na=False)]
-    else:
-        cand = exact
+    cand = exact if not exact.empty else sub[sub["Characteristic"].str.contains(rf"{band_label}", case=False, na=False)]
 
     if cand.empty:
         return 0.0
 
-    # Prefer rows that do NOT look like percent rows
-    def is_percent_label(s: str) -> bool:
+    # Strictly reject percent-like rows
+    def looks_percent(s: str) -> bool:
         s = s.lower()
-        return ("(%)" in s) or (" percent" in s) or ("percentage" in s) or ("% of" in s)
+        return (
+            "(%)" in s or " percent" in s or "percentage" in s or
+            "% of" in s or "proportion" in s
+        )
 
-    # Build candidates (value, is_percent, label)
-    candidates = []
-    for _, r in cand.iterrows():
-        v = _coerce_number(r.get(geo_col))
-        if v is None or v <= 0:
-            continue
-        lbl = str(r.get("Characteristic", ""))
-        candidates.append((float(v), is_percent_label(lbl), lbl))
-
-    if not candidates:
+    cand = cand[~cand["Characteristic"].astype(str).apply(looks_percent)]
+    if cand.empty:
         return 0.0
 
-    # 1) Prefer non-percent labels; pick the largest among them
-    non_pct = [v for v in candidates if not v[1]]
-    if non_pct:
-        return max(non_pct, key=lambda t: t[0])[0]
+    # Collect numeric candidates from geo_col
+    vals = []
+    for _, r in cand.iterrows():
+        v = _coerce_number(r.get(geo_col))
+        if v is not None and v > 0:
+            vals.append(float(v))
 
-    # 2) Else pick the largest overall
-    return max(candidates, key=lambda t: t[0])[0]
+    if not vals:
+        return 0.0
 
+    # If multiple count-like matches, take the largest (counts >> any residual small figures)
+    return max(vals)
 
 def extract_age_bands(df, geo_col) -> OrderedDict:
     bands = OrderedDict()
@@ -1477,6 +1471,22 @@ else:
             file_name=f"{(place_guess or 'community')}_deep_analysis_prompt.txt",
             mime="text/plain",
         )
+
+    with st.expander("Debug: child band sources (counts only)", expanded=False):
+    st.caption(f"Using value column: **{geo_col}**")
+    for lab in ["0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"]:
+        sub = cleaned_df[
+            cleaned_df["Topic"].str.contains("Age characteristics", case=False, na=False)
+            & cleaned_df["Characteristic"].str.contains(lab, case=False, na=False)
+        ].copy()
+        # flag possible percent rows for visibility
+        sub["maybe_percent_row"] = sub["Characteristic"].str.contains(
+            r"\(\%\)|percent|percentage|proportion|% of", case=False, na=False
+        )
+        # show just the relevant columns
+        show_cols = ["Topic", "Characteristic", geo_col, "maybe_percent_row"]
+        st.write(f"**{lab}**")
+        st.dataframe(sub[show_cols], use_container_width=True)
 
     # ---- Filtered Report ----
     st.subheader("Filtered Report")
