@@ -741,13 +741,13 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     # --- Children by detailed age bands (raw 2021 AND optionally age-adjusted) ---
     bands_raw = get_childteen_bands(df, geo_col, as_of_date=None)
     bands_adj = get_childteen_bands(df, geo_col, as_of_date=as_of_date) if as_of_date is not None else None
-
+    
     def _fmt_count(x):
         try:
             return f"{int(round(float(x))):,}"
         except Exception:
             return "0"
-
+    
     parts = []
     for lab, short in [
         ("0 to 4 years", "0–4"),
@@ -756,12 +756,12 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
         ("15 to 19 years", "15–19"),
     ]:
         raw_v = bands_raw.get(lab, 0.0) if bands_raw else 0.0
-        s = f"{short}: ~{_fmt_count(raw_v)}"
+        segment = f"{short}: ~{_fmt_count(raw_v)}"
         if bands_adj is not None:
             adj_v = bands_adj.get(lab, 0.0)
-            s += f" (aged: ~{_fmt_count(adj_v)})"
-    parts.append(s)
-
+            segment += f" (aged: ~{_fmt_count(adj_v)})"
+        parts.append(segment)
+    
     child_bands_block = " ; ".join(parts) if any(
         (bands_raw.get(k, 0.0) or 0.0) > 0 for k in (
             "0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"
