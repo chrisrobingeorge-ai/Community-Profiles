@@ -1560,6 +1560,36 @@ def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
     out = df.loc[keep_rows].copy().reset_index(drop=True)
     return out
 
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.units import inch
+
+def create_summary_pdf(summary_text: str, community_name: str) -> BytesIO:
+    """
+    Builds a simple PDF containing the Community Profile Summary text.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter,
+                            rightMargin=72, leftMargin=72,
+                            topMargin=72, bottomMargin=72)
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Title
+    story.append(Paragraph(f"Community Profile Summary — {community_name}", styles['Title']))
+    story.append(Spacer(1, 0.25 * inch))
+
+    # Split the summary into paragraphs
+    for para in summary_text.split("\n\n"):
+        story.append(Paragraph(para, styles['BodyText']))
+        story.append(Spacer(1, 0.15 * inch))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 # ------------------------------------------------
 # UI
@@ -1602,7 +1632,16 @@ else:
         place_name=place_guess,
     )
     st.write(summary_text)
-
+# ---- PDF Download Button ----
+if summary_text:
+    pdf_buffer = create_summary_pdf(summary_text, place_name or "Community Profile")
+    st.download_button(
+        label="📄 Download Summary as PDF",
+        data=pdf_buffer,
+        file_name=f"{place_name or 'community_profile'}_summary.pdf",
+        mime="application/pdf",
+    )
+    
     # 7) Filtered table view (collapsible topics, zero-row suppression)
     st.subheader("Filtered Report")
     render_report(cleaned_df)
