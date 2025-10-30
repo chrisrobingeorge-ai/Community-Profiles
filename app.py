@@ -87,38 +87,97 @@ import re
 
 def _characteristic_sort_key(label: str) -> tuple:
     """
-    Return a tuple we can sort on that keeps natural human order for things like:
-    - '0 to 4 years', '5 to 9 years', '10 to 14 years', ...
-    - '$0 to $9,999', '$10,000 to $19,999', ...
-    - 'Less than 5 minutes', '5 to 14 minutes', '15 to 29 minutes', etc.
+    Generate a tuple sort key that:
+    - Orders numeric bands (ages, income ranges, commute times) in ascending numeric order.
+    - Groups income 'Total - ...' rows after the numeric bands.
+    - Pushes 'Average ...', 'Median ...' rows to the bottom.
+    - Keeps stable alphabetical fallback inside each group.
 
-    Strategy:
-    - Pull the first number in the string.
-    - If found, use that number as primary key.
-    - If there's a second number, use it as secondary key.
-    - If no numbers at all, fall back to the text itself.
+    Returns (group_rank, primary_num, secondary_num, text)
+    Lower group_rank comes first.
     """
 
     if label is None:
-        return (9999999, 9999999, "")  # push weird/blank to the bottom
+        return (9999, 9999999, 9999999, "")
 
-    text = str(label)
+    text = str(label).strip()
+    low = text.lower()
 
-    # find all numbers in order
+    # ---------- 1) Special handling for Income tables ----------
+    # Bucket: income-bracket ranges like "$5,000 to $9,999", "Under $5,000", "$150,000 and over"
+    income_range_patterns = [
+        r"^\$?([\d,]+)\s*to\s*\$?([\d,]+)",          # "$5,000 to $9,999"
+        r"^under\s*\$?([\d,]+)",                      # "Under $5,000"
+        r"^\$?([\d,]+)\s*(and over|\+)",              # "$200,000 and over"
+    ]
+    for patt in income_range_patterns:
+        m = re.match(patt, text, flags=re.IGNORECASE)
+        if m:
+            # Try to pull the first number
+            n1_raw = m.group(1)
+            n1 = int(n1_raw.replace(",", "")) if n1_raw else 0
+
+            # Try the second number if exists
+            n2 = n1
+            if len(m.groups()) >= 2:
+                g2 = m.group(2)
+                # "to $9,999" case → g2 will be like "9,999"
+                if g2 and "to" not in patt and "and over" not in g2.lower():
+                    # we won't actually hit this branch because of the pattern grouping,
+                    # but leave it for safety
+                    pass
+
+            # For "to" pattern, group(2) is the upper bound
+            m_to = re.match(r"^\$?([\d,]+)\s*to\s*\$?([\d,]+)", text, flags=re.IGNORECASE)
+            if m_to:
+                n1 = int(m_to.group(1).replace(",", ""))
+                n2 = int(m_to.group(2).replace(",", ""))
+
+            # For "Under $5,000", treat range as (0 .. 5000)
+            m_under = re.match(r"^under\s*\$?([\d,]+)", text, flags=re.IGNORECASE)
+            if m_under:
+                n1 = 0
+                n2 = int(m_under.group(1).replace(",", ""))
+
+            # For "$200,000 and over", treat as (200000 .. inf)
+            m_over = re.match(r"^\$?([\d,]+)\s*(and over|\+)", text, flags=re.IGNORECASE)
+            if m_over:
+                n1 = int(m_over.group(1).replace(",", ""))
+                n2 = n1 + 999999  # shove it to the end of the numeric ladder
+
+            # group_rank 0 = income ranges at the top of the Income table
+            return (0, n1, n2, low)
+
+    # Bucket: "Total - Income statistics ..." etc.
+    if low.startswith("total -"):
+        # group_rank 1 = totals block, comes after numeric ranges
+        # we still want a stable sort inside this group, so use `low`
+        return (1, 0, 0, low)
+
+    # Bucket: averages / medians
+    if low.startswith("average ") or low.startswith("median "):
+        # group_rank 2 = averages/medians at the bottom
+        return (2, 0, 0, low)
+
+    # ---------- 2) Generic numeric band handling (ages, commute minutes, etc.) ----------
+    # Try to pull “0 to 4 years”, “15 to 19 years”, “5 to 14 minutes”, etc.
     nums = re.findall(r"\d+", text)
     if nums:
         first_num = int(nums[0])
         second_num = int(nums[1]) if len(nums) > 1 else first_num
-        return (first_num, second_num, text.lower())
+        return (0, first_num, second_num, low)
 
-    # special catch for '85 years and over', '65 years and over', etc.
-    m_over = re.match(r"^\s*(\d+)\s+years\s+and\s+over", text, flags=re.IGNORECASE)
-    if m_over:
-        n = int(m_over.group(1))
-        return (n, n+1000, text.lower())
+    # Special case like "65 years and over", "60 minutes or more"
+    m_over_generic = re.match(r"^\s*(\d+).*(and over|or more)", text, flags=re.IGNORECASE)
+    if m_over_generic:
+        n = int(m_over_generic.group(1))
+        return (0, n, n + 1000, low)
 
-    # if we can't get any numbers, give it a high key but still stable
-    return (9999998, 9999998, text.lower())
+    # ---------- 3) Fallback ----------
+    # If we get here, it's something like "Total population ..." or "Employed persons ..."
+    # Give it a later rank (1) so that numeric bands still sort first within that topic.
+    return (1, 9999998, 9999998, low)
+
 
 def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "Topic" not in df.columns or "Characteristic" not in df.columns:
