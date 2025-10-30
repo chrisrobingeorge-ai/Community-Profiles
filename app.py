@@ -37,8 +37,6 @@ TARGET_TOPICS = [
     "Selected places of birth for the recent immigrant population",
     "Ethnic origin",
     "Ethnic or cultural origin",
-    "Indigenous population",
-    "Indigenous ancestry",
     "Visible minority",
     "Secondary (high) school diploma or equivalency certificate",
     "Highest certificate, diploma or degree",
@@ -682,6 +680,43 @@ def derive_indigenous_from_ethnic_origin(
         out = out.sort_values(by="Count", ascending=False, kind="mergesort").reset_index(drop=True)
     return out
 
+def summarize_indigenous_nations_from_ethnic(df: pd.DataFrame) -> list[str]:
+    """
+    Return a cleaned list of Nation/People names (no counts) based on the
+    ethnic-origin-derived Indigenous table.
+    We'll reuse derive_indigenous_from_ethnic_origin() internally.
+    """
+    geo_col = pick_geo_col(df)
+    if not geo_col:
+        return []
+
+    # grab 2021 pop for percentages
+    pop_rows = df[
+        ((df.get("Topic_norm", df["Topic"])
+           if "Topic_norm" in df.columns else df["Topic"])
+          .str.contains("Population and dwellings", case=False, na=False))
+        &
+        (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
+    ]
+    pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
+
+    nations_df = derive_indigenous_from_ethnic_origin(df, geo_col, pop_val_num)
+    if nations_df.empty:
+        return []
+
+    # Use the "Group" column
+    groups = nations_df["Group"].astype(str).tolist()
+
+    # Deduplicate while preserving order
+    seen = set()
+    ordered = []
+    for g in groups:
+        low = g.lower().strip()
+        if low not in seen:
+            seen.add(low)
+            ordered.append(g)
+    return ordered
+
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
     if df.empty:
         return "No summary available."
@@ -838,18 +873,18 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
         lines.append(" ".join(household_barrier_lines))
 
     # -------------------------------------------------
-    # 5. Indigenous Nations / Peoples
+    # 5. Indigenous Nations / Peoples (from Ethnic origin)
     # -------------------------------------------------
-    nations = extract_indigenous_nations(df, geo_col)
+    nations = summarize_indigenous_nations_from_ethnic(df)
     if nations:
         if len(nations) == 1:
             lines.append(
-                f"Indigenous presence: {nations[0]} is present in meaningful numbers. Programming should be coordinated with local Indigenous leadership and should expect Indigenous youth participation."
+                f"Indigenous presence: {nations[0]} is present in meaningful numbers. Work should be coordinated with local Indigenous leadership, and we should expect Indigenous youth to participate."
             )
         else:
             nation_list_text = ", ".join(nations[:-1]) + f", and {nations[-1]}"
             lines.append(
-                f"Indigenous presence: {nation_list_text} are present in meaningful numbers. Programming should be coordinated with local Indigenous leadership and should expect Indigenous youth participation."
+                f"Indigenous presence includes {nation_list_text}. Work should be coordinated with local Indigenous leadership, and we should expect Indigenous youth to participate."
             )
 
     # -------------------------------------------------
