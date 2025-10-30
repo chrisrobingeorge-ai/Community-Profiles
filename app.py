@@ -964,30 +964,145 @@ def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+from reportlab.lib.pagesizes import LETTER, landscape  # add landscape import at top with others
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_RIGHT, TA_LEFT
+from reportlab.platypus import Paragraph, Table, TableStyle, SimpleDocTemplate, Spacer, PageBreak
+from reportlab.lib import colors
+
+def _calc_col_widths(avail_w: float, n_values: int) -> list[float]:
+    """
+    Return [char_w] + [num_w]*n_values that fits within avail_w.
+    - numeric columns get a compact, equal width
+    - characteristic column gets the rest (and can wrap)
+    """
+    # Guard rails / heuristics in points
+    MIN_CHAR = 120.0   # Characteristic must get at least this
+    MAX_CHAR = avail_w * 0.75
+    # Start with a reasonable numeric width
+    num_w = 56.0
+    if n_values > 8:    num_w = 48.0
+    if n_values > 10:   num_w = 42.0
+    if n_values > 12:   num_w = 38.0
+
+    total_num = num_w * n_values
+    char_w = max(MIN_CHAR, min(MAX_CHAR, avail_w - total_num))
+
+    # If still too tight, squeeze numerics but never below 34pt
+    if char_w + total_num > avail_w:
+        num_w = max(34.0, (avail_w - MIN_CHAR) / max(1, n_values))
+        total_num = num_w * n_values
+        char_w = max(MIN_CHAR, avail_w - total_num)
+
+    return [char_w] + [num_w] * n_values
+
+
+def _make_wrapped_table(table_df: pd.DataFrame, styles, base_font: int, avail_w: float):
+    """
+    Build a Table with wrapped text in col 0 and right-aligned numerics in others.
+    Returns the (Table, effective_font_size).
+    """
+    # Styles for cells
+    p_body = ParagraphStyle(
+        "tbl-body", parent=styles["BodyText"], fontSize=base_font, leading=base_font + 2, alignment=TA_LEFT
+    )
+    p_num = ParagraphStyle(
+        "tbl-num", parent=styles["BodyText"], fontSize=base_font, leading=base_font + 2, alignment=TA_RIGHT
+    )
+    p_head = ParagraphStyle(
+        "tbl-head", parent=styles["BodyText"], fontSize=base_font, leading=base_font + 2
+    )
+
+    # Build data with Paragraphs (needed for word wrap)
+    headers = table_df.columns.tolist()
+    head_row = [Paragraph(str(h), p_head) for h in headers]
+
+    data_rows = []
+    for _, r in table_df.iterrows():
+        row_cells = []
+        for j, c in enumerate(headers):
+            val = "" if pd.isna(r[c]) else str(r[c])
+            if j == 0:
+                row_cells.append(Paragraph(val, p_body))  # Characteristic (wrap)
+            else:
+                row_cells.append(Paragraph(val, p_num))   # numeric-ish (right)
+        data_rows.append(row_cells)
+
+    # Compute widths to fit
+    n_values = len(headers) - 1
+    col_widths = _calc_col_widths(avail_w, n_values)
+
+    # Construct table
+    t = Table([head_row] + data_rows, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f5f5f5")),
+        ("TEXTCOLOR",   (0,0), (-1,0), colors.black),
+        ("FONTNAME",    (0,0), (-1,0), "Helvetica-Bold"),
+        ("GRID",        (0,0), (-1,-1), 0.25, colors.HexColor("#999999")),
+        ("VALIGN",      (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 4),
+        ("RIGHTPADDING",(0,0), (-1,-1), 4),
+        ("TOPPADDING",  (0,0), (-1,-1), 2),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 2),
+        ("WORDWRAP",    (0,0), (-1,-1), True),
+        # Ensure numeric columns render as a block (helps right-align Paragraphs)
+        ("ALIGN",       (1,1), (-1,-1), "RIGHT"),
+    ]))
+    return t
+
+
 def create_full_pdf(summary_text: str, place_name: str, cleaned_df: pd.DataFrame) -> bytes:
+    """
+    Auto-fits tables to the page by wrapping text, sizing columns, and
+    switching to landscape when many columns are present.
+    """
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="HeadingPlace", parent=styles["Heading1"], fontSize=16, leading=20, spaceAfter=12))
     styles.add(ParagraphStyle(name="SectionHeader", parent=styles["Heading2"], fontSize=12, leading=15, spaceBefore=12, spaceAfter=6, textColor=colors.black))
     styles.add(ParagraphStyle(name="BodyTextTight", parent=styles["BodyText"], fontSize=10, leading=13, spaceAfter=6))
 
+    # Work out column count once (all tables share same schema after cleaning)
+    topic_col = "Topic_norm" if "Topic_norm" in cleaned_df.columns else "Topic"
+    value_cols = [c for c in cleaned_df.columns if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")]
+    total_cols = 1 + len(value_cols)
+
+    # Pick orientation based on width pressure
+    # Portrait LETTER usable width ≈ 612-72 = 540pt; Landscape gives ~ 720pt usable.
+    use_landscape = len(value_cols) >= 8  # heuristic threshold
+    pagesize = landscape(LETTER) if use_landscape else LETTER
+
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=LETTER, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=pagesize,
+        leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36,
+    )
+
+    # Available width for tables
+    avail_w = doc.pagesize[0] - doc.leftMargin - doc.rightMargin
+
+    # Base font: smaller for very wide tables
+    base_font = 8
+    if len(value_cols) >= 9:
+        base_font = 7
+    if len(value_cols) >= 12:
+        base_font = 6
+
     story = []
 
+    # Title
     safe_place = place_name or "Community Profile"
     story.append(Paragraph(f"Community Profile Summary for {safe_place}", styles["HeadingPlace"]))
     story.append(Spacer(1, 6))
 
+    # Narrative
     for block in summary_text.split("\n\n"):
         block = block.strip()
-        if not block:
-            continue
-        story.append(Paragraph(block, styles["BodyTextTight"]))
+        if block:
+            story.append(Paragraph(block, styles["BodyTextTight"]))
     story.append(PageBreak())
 
-    topic_col = "Topic_norm" if "Topic_norm" in cleaned_df.columns else "Topic"
-    value_cols = [c for c in cleaned_df.columns if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")]
-
+    # Group tables by topic
     def row_has_nonzero_data_pdf(row: pd.Series) -> bool:
         for c in value_cols:
             if c not in row:
@@ -1003,28 +1118,12 @@ def create_full_pdf(summary_text: str, place_name: str, cleaned_df: pd.DataFrame
             continue
 
         pretty_df = pd.DataFrame(rows_keep)[["Characteristic"] + value_cols].reset_index(drop=True)
+
+        # Topic header
         story.append(Paragraph(str(topic), styles["SectionHeader"]))
 
-        table_data = [pretty_df.columns.tolist()]
-        for _, r in pretty_df.iterrows():
-            table_data.append([str(r[c]) if pd.notna(r[c]) else "" for c in pretty_df.columns])
-
-        t = Table(table_data, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f5f5f5")),
-            ("TEXTCOLOR",   (0,0), (-1,0), colors.black),
-            ("FONTNAME",    (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE",    (0,0), (-1,0), 8),
-            ("FONTSIZE",    (0,1), (-1,-1), 8),
-            ("LEADING",     (0,1), (-1,-1), 10),
-            ("GRID",        (0,0), (-1,-1), 0.25, colors.HexColor("#999999")),
-            ("ALIGN",       (1,1), (-1,-1), "RIGHT"),
-            ("VALIGN",      (0,0), (-1,-1), "TOP"),
-            ("LEFTPADDING", (0,0), (-1,-1), 4),
-            ("RIGHTPADDING",(0,0), (-1,-1), 4),
-            ("TOPPADDING",  (0,0), (-1,-1), 2),
-            ("BOTTOMPADDING",(0,0),(-1,-1), 2),
-        ]))
+        # Table with wrapped content and fitted widths
+        t = _make_wrapped_table(pretty_df, styles, base_font, avail_w)
         story.append(t)
         story.append(Spacer(1, 12))
 
