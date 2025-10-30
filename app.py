@@ -35,6 +35,8 @@ TARGET_TOPICS = [
     "Immigrant status and period of immigration",
     "Selected places of birth for the immigrant population",
     "Selected places of birth for the recent immigrant population",
+    "Ethnic origin",
+    "Ethnic or cultural origin",
     "Indigenous population",
     "Indigenous ancestry",
     "Visible minority",
@@ -186,9 +188,10 @@ def build_printable_html(df: pd.DataFrame) -> str:
         "<p>Filtered fields aligned to community planning / Growing Up Strong.</p>",
     ]
 
-    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic")]
+    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Topic_norm")]
+    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
 
-    for topic, sub in df.groupby("Topic", dropna=False):
+    for topic, sub in df.groupby(topic_col, dropna=False):
         parts.append(f"<h2>{topic}</h2>")
         tmp = sub[["Characteristic"] + value_cols].reset_index(drop=True)
         parts.append(tmp.to_html(index=False, escape=False))
@@ -595,6 +598,89 @@ def age_bands_adjust_to_date(bands: OrderedDict, as_of: date) -> OrderedDict:
 
 def sum_bands(bands: OrderedDict, wanted_labels: list[str]) -> float:
     return float(sum(bands.get(l, 0.0) for l in wanted_labels))
+
+import re
+
+def derive_indigenous_from_ethnic_origin(
+    df: pd.DataFrame,
+    geo_col: str,
+    pop_val_num: float | None = None
+) -> pd.DataFrame:
+    """
+    Build a compact table of Indigenous groups using the Ethnic origin / Ethnic or cultural origin topic.
+    Output: columns ['Group', 'Count', 'Percent'] (Percent only if pop_val_num provided)
+    """
+
+    if df.empty or not geo_col:
+        return pd.DataFrame(columns=["Group", "Count", "Percent"])
+
+    # Use normalized topic if present
+    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
+    ETHNIC_TOPIC_REGEX = r"(Ethnic origin|Ethnic or cultural origin|Origine ethnique ou culturelle)"
+
+    sub = df[df[topic_col].str.contains(ETHNIC_TOPIC_REGEX, case=False, na=False)].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=["Group", "Count", "Percent"])
+
+    # Canonical buckets for AB-relevant Nations/Peoples (+ common variants)
+    groups_patterns: dict[str, list[str]] = {
+        "Cree / Anishinaabe (incl. Saulteaux, Ojibwe, Oji-Cree)": [
+            r"\bcree\b", r"\bplains\s*cree\b", r"\bwoodland\s*cree\b",
+            r"\boji[\-\s]?cree\b", r"\bsaulteaux\b", r"\banishinaabe\b", r"\bojibw?e?y?\b",
+        ],
+        "Dene": [r"\bdene\b"],
+        "Tsuut’ina": [r"\btsu+?t[’'\- ]?ina\b"],
+        "Blackfoot": [r"\bblackfoot\b"],
+        "Stoney Nakoda": [r"\bstoney\b", r"\bnakoda\b"],
+        "Métis": [r"\bm[ée]tis\b", r"\bmetis\b"],
+        "Inuit": [r"\binuit\b"],
+        "First Nations (unspecified)": [
+            r"first\s+nations\s*\(north american indian\).*n\.o\.s\.",
+            r"\bfirst\s+nations\b.*\bn\.o\.s\.",
+            r"\bnorth american indigenous\b.*\bn\.o\.s\.",
+        ],
+    }
+
+    # Ignore obvious non-ethnic / irrelevant categories
+    ignore_if_matches = [
+        r"\bchristian\b", r"\bbuddhist\b", r"\bhindu\b", r"\bmuslim\b", r"\bsikh\b",
+        r"\bontarian\b", r"\balbertan\b", r"\bmanitoban\b", r"\bnewfoundlander\b",
+        r"\bcanadian\b", r"\bqu[eè]b[ée]cois\b", r"\bfranco\s*ontarian\b",
+        r"\bafrican\b.*\bn\.o\.s\.", r"\basian\b.*\bn\.o\.s\.", r"\bslavic\b.*\bn\.o\.s\.",
+        r"\bnorth american\b.*\bn\.o\.s\.",
+    ]
+    ignore_re = re.compile("|".join(ignore_if_matches), re.IGNORECASE)
+
+    # Tally
+    tallies: dict[str, float] = {k: 0.0 for k in groups_patterns.keys()}
+
+    for _, r in sub.iterrows():
+        label = str(r["Characteristic"]).strip().lower()
+        if ignore_re.search(label):
+            continue
+        val = _coerce_number(r[geo_col])
+        if val is None or val <= 0:
+            continue
+
+        for group, patt_list in groups_patterns.items():
+            if any(re.search(p, label, flags=re.IGNORECASE) for p in patt_list):
+                tallies[group] += float(val)
+                break  # stop at first matching group
+
+    rows = []
+    for group, count in tallies.items():
+        if count > 0:
+            pct = (count / pop_val_num * 100.0) if (pop_val_num and pop_val_num > 0) else None
+            rows.append({
+                "Group": group,
+                "Count": int(round(count)),
+                "Percent": (f"{pct:.1f}%" if pct is not None else None),
+            })
+
+    out = pd.DataFrame(rows, columns=["Group", "Count", "Percent"])
+    if not out.empty:
+        out = out.sort_values(by="Count", ascending=False, kind="mergesort").reset_index(drop=True)
+    return out
 
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None) -> str:
     if df.empty:
@@ -1077,6 +1163,26 @@ else:
     # 4) Filtered table view
     st.subheader("Filtered Report")
     render_report(cleaned_df)
+
+    # --- Derived Indigenous table from Ethnic origin ---
+    geo_col = pick_geo_col(cleaned_df)
+
+    # population (for % column)
+    pop_rows = cleaned_df[
+        ((cleaned_df.get("Topic_norm", cleaned_df["Topic"])
+           if "Topic_norm" in cleaned_df.columns else cleaned_df["Topic"])
+          .str.contains("Population and dwellings", case=False, na=False))
+        &
+        (cleaned_df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
+    ]
+    pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
+
+    st.subheader("Indigenous Population (Ethnic origin–derived)")
+    indig_from_ethnic = derive_indigenous_from_ethnic_origin(cleaned_df, geo_col, pop_val_num)
+    if indig_from_ethnic.empty:
+        st.caption("No Alberta-relevant Indigenous groups detected in Ethnic origin.")
+    else:
+        st.dataframe(indig_from_ethnic, use_container_width=True)
 
     # 5) Raw preview (optional)
     st.subheader("Raw Preview (first 20 rows)")
