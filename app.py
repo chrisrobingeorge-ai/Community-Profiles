@@ -1050,7 +1050,6 @@ def _make_wrapped_table(table_df: pd.DataFrame, styles, base_font: int, avail_w:
     ]))
     return t
 
-
 def create_full_pdf(summary_text: str, place_name: str, cleaned_df: pd.DataFrame) -> bytes:
     """
     Auto-fits tables to the page by wrapping text, sizing columns, and
@@ -1225,31 +1224,118 @@ def build_chatgpt_prompt(
 
     return prompt_copy, prompt_full
 
+from functools import reduce
+
+def load_and_clean(uploaded_file) -> pd.DataFrame:
+    """Load one CSV and run your existing cleaning pipeline."""
+    raw = load_statcan_csv(uploaded_file)
+    df = filter_relevant_rows(raw)
+    df = collapse_duplicate_characteristics(df)
+    df = prune_columns(df)
+    return df
+
+
+def merge_cleaned_profiles(named_cleaned: list[tuple[str, pd.DataFrame]]) -> tuple[pd.DataFrame, str, list[str]]:
+    """
+    named_cleaned: list of (label, cleaned_df) where each df has Topic/Topic_norm/Characteristic and one geo column.
+    Returns: (merged_df, combined_label, value_cols_kept)
+    - Keeps each area as its own column (by label)
+    - Adds 'Combined' = row-wise sum across those columns (ignoring NaN)
+    """
+    # Build minimal frames with a single numeric column per area, labeled by that area
+    minimal_frames = []
+    labels = []
+    for label, df in named_cleaned:
+        geo_col = pick_geo_col(df)
+        if not geo_col:
+            continue
+        minimal = df[["Topic", "Topic_norm", "Characteristic", geo_col]].copy()
+        minimal = minimal.rename(columns={geo_col: label})
+        minimal_frames.append(minimal)
+        labels.append(label)
+
+    if not minimal_frames:
+        return pd.DataFrame(), "Combined", []
+
+    # Outer-merge on (Topic_norm, Characteristic, Topic) to preserve headings and sort keys
+    merged = reduce(
+        lambda left, right: pd.merge(
+            left, right, on=["Topic_norm", "Characteristic", "Topic"], how="outer"
+        ),
+        minimal_frames
+    )
+
+    # Create a Combined column (numeric sum across included labels)
+    def _to_num(s):
+        return pd.to_numeric(s.astype(str).str.replace("%", "").str.replace(",", ""), errors="coerce")
+
+    value_cols = labels[:]  # columns to sum
+    merged["Combined"] = _to_num(merged[value_cols]).sum(axis=1, skipna=True)
+
+    # Reuse your sort logic within topics
+    merged["__char_sort_key__"] = merged["Characteristic"].apply(_characteristic_sort_key)
+    merged = merged.sort_values(by=["Topic_norm", "__char_sort_key__"], kind="mergesort").drop(columns="__char_sort_key__").reset_index(drop=True)
+
+    # For downstream functions that look for a numeric "best" column, Combined will win.
+    return merged, "Combined", value_cols
+
 # ------------------------------------------------
-# UI
+# UI (multi-CSV regional rollup supported)
 # ------------------------------------------------
-uploaded_file = st.file_uploader(
-    "Upload a Statistics Canada Census Profile CSV",
+uploaded_files = st.file_uploader(
+    "Upload one or more Statistics Canada Census Profile CSVs",
     type=["csv"],
-    help="Use the 'Download CSV' option from a community's Census Profile table.",
+    accept_multiple_files=True,
+    help="Tip: upload both the municipality and the surrounding MD if the program will draw from both.",
 )
 
-if uploaded_file is None:
-    st.info("Upload a CSV to generate the community profile.")
+if not uploaded_files:
+    st.info("Upload at least one CSV to generate the community profile.")
     st.stop()
 else:
-    raw_df = load_statcan_csv(uploaded_file)
-    cleaned_df = filter_relevant_rows(raw_df)
-    cleaned_df = collapse_duplicate_characteristics(cleaned_df)
-    cleaned_df = prune_columns(cleaned_df)
+    # Load & clean each file
+    cleaned_named: list[tuple[str, pd.DataFrame]] = []
+    for uf in uploaded_files:
+        df_clean = load_and_clean(uf)
+        label = extract_place_name(uf.name) or os.path.splitext(uf.name)[0]
+        cleaned_named.append((label, df_clean))
 
+    # Merge if multiple; or just take the single frame
+    if len(cleaned_named) == 1:
+        place_guess = cleaned_named[0][0]
+        cleaned_df = cleaned_named[0][1]
+    else:
+        merged_df, combined_label, indiv_cols = merge_cleaned_profiles(cleaned_named)
+        cleaned_df = merged_df
+        # Combined label for the report title
+        place_guess = " + ".join([nm for nm, _ in cleaned_named])
+
+        # Optional: let user choose which value column to use for the analysis (default = Combined)
+        with st.sidebar:
+            st.markdown("### Value column for analysis")
+            default_choice = "Combined"
+            choices = [default_choice] + [nm for nm, _ in cleaned_named]
+            chosen_value_col = st.selectbox(
+                "Which column should drive the summary, PDF, and prompt?",
+                choices,
+                index=0,
+                help="Use 'Combined' for a regional rollup, or pick an individual area to view it on its own."
+            )
+        # If user picked an individual area, make that the dominant numeric column by moving it to 'Combined'
+        if chosen_value_col != "Combined" and chosen_value_col in cleaned_df.columns:
+            cleaned_df["Combined"] = pd.to_numeric(
+                cleaned_df[chosen_value_col].astype(str).str.replace("%","").str.replace(",",""),
+                errors="coerce"
+            )
+
+    # Sidebar age controls
     with st.sidebar:
         st.markdown("### Real-time age adjustment")
         use_age_adjust = st.checkbox("Age cohorts forward from 2021", value=True)
         as_of = st.date_input("As-of date", value=date.today())
 
+    # ---- Summary (uses 'Combined' implicitly via pick_geo_col) ----
     st.subheader("Community Profile Summary")
-    place_guess = extract_place_name(uploaded_file.name)
     summary_text = generate_summary(
         cleaned_df,
         as_of_date=(as_of if use_age_adjust else None),
@@ -1257,6 +1343,7 @@ else:
     )
     st.write(summary_text)
 
+    # ---- PDF ----
     if summary_text:
         pdf_bytes = create_full_pdf(
             summary_text=summary_text,
@@ -1270,33 +1357,30 @@ else:
             mime="application/pdf",
         )
 
-    # --- Deeper analysis prompt for ChatGPT ---
+    # ---- ChatGPT prompt (expander; uses your existing helper) ----
     with st.expander("Deeper analysis (copy-ready prompt)", expanded=False):
-        # Requires build_chatgpt_prompt(...) helper defined above the UI section.
         prompt_copy, prompt_full = build_chatgpt_prompt(
             summary_text=summary_text or "",
             cleaned_df=cleaned_df,
             place_name=place_guess,
             as_of_date=(as_of if use_age_adjust else None),
         )
-
         st.caption(
-            "Copy this prompt into ChatGPT to get a deeper analysis and program impact assessment "
-            "tailored to Growing Up Strong."
+            "Copy this prompt into ChatGPT to get a deeper analysis and program impact assessment tailored to Growing Up Strong."
         )
         st.code(prompt_copy, language="markdown")
-
         st.download_button(
             label="⬇️ Download full prompt (TXT with complete table)",
             data=prompt_full.encode("utf-8"),
             file_name=f"{(place_guess or 'community')}_deep_analysis_prompt.txt",
             mime="text/plain",
-            help="Use this if the table is long; the code block above shows a trimmed version for quick copy/paste."
         )
 
+    # ---- Filtered Report ----
     st.subheader("Filtered Report")
     render_report(cleaned_df)
 
+    # ---- Indigenous rollup (uses pick_geo_col → will prefer 'Combined') ----
     geo_col = pick_geo_col(cleaned_df)
     topic_col_for_pop = "Topic_norm" if "Topic_norm" in cleaned_df.columns else "Topic"
     pop_rows = cleaned_df[
@@ -1312,6 +1396,7 @@ else:
     else:
         st.dataframe(indig_from_ethnic, use_container_width=True)
 
+    # ---- Export ----
     st.subheader("Export")
     col1, col2 = st.columns(2)
     with col1:
@@ -1331,4 +1416,4 @@ else:
             file_name="community_profile_report.html",
             mime="text/html",
         )
-    st.markdown("**Note:** Open the downloaded HTML in a browser and use Print → Save as PDF.")
+    st.markdown("**Note:** If you uploaded multiple CSVs, all summary figures above reflect the selected value column (default: Combined).")
