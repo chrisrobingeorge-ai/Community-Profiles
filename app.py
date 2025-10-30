@@ -134,32 +134,72 @@ def filter_relevant_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 def render_report(df: pd.DataFrame):
     """
-    Show results in collapsible sections by Topic.
+    Show results in collapsible sections by Topic, but hide rows that have
+    no meaningful (>0) values in any numeric column.
     """
     if df.empty:
         st.warning("No matching rows found in this CSV for the selected fields.")
         return
 
-    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Topic_norm")]
+    # columns that actually carry values (exclude metadata-ish columns)
+    value_cols = [
+        c for c in df.columns
+        if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")
+    ]
 
     topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
 
     for topic, sub in df.groupby(topic_col, dropna=False):
+        # keep only rows where at least one of the value_cols is >0
+        filtered_rows = []
+        for _, r in sub.iterrows():
+            if row_has_nonzero_data(r, value_cols):
+                filtered_rows.append(r)
+
+        if not filtered_rows:
+            # if nothing survives in this topic, don't show that topic at all
+            continue
+
+        pretty_df = pd.DataFrame(filtered_rows)[["Characteristic"] + value_cols].reset_index(drop=True)
+
         with st.expander(f"📂 {topic}", expanded=True):
-            pretty = sub[["Characteristic"] + value_cols].reset_index(drop=True)
-            st.dataframe(pretty, use_container_width=True)
+            st.dataframe(pretty_df, use_container_width=True)
+
+def drop_zero_only_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy of df with rows removed if they have no >0 numeric values
+    in any value column (same rule we use for on-screen tables).
+    """
+    if df.empty:
+        return df.copy()
+
+    value_cols = [
+        c for c in df.columns
+        if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")
+    ]
+
+    keep_mask = []
+    for _, r in df.iterrows():
+        keep_mask.append(row_has_nonzero_data(r, value_cols))
+
+    out = df[keep_mask].copy()
+    out.reset_index(drop=True, inplace=True)
+    return out
 
 
 def build_filtered_csv(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8-sig")
+    cleaned_no_zeros = drop_zero_only_rows(df)
+    return cleaned_no_zeros.to_csv(index=False).encode("utf-8-sig")
 
 
 def build_printable_html(df: pd.DataFrame) -> str:
     """
-    Build a simple HTML report the user can 'Save as PDF' in their browser.
-    Streamlit will just download it as .html.
+    Build a simple HTML report the user can 'Save as PDF'.
+    We also hide rows that are 0-only the same way the UI does.
     """
-    if df.empty:
+    cleaned = drop_zero_only_rows(df)
+
+    if cleaned.empty:
         return "<html><body><h1>No data</h1></body></html>"
 
     styles = """
@@ -186,16 +226,25 @@ def build_printable_html(df: pd.DataFrame) -> str:
         "<p>Filtered fields aligned to community planning / Growing Up Strong.</p>",
     ]
 
-    value_cols = [c for c in df.columns if c not in ("Topic", "Characteristic", "Topic_norm")]
-    topic_col = "Topic_norm" if "Topic_norm" in df.columns else "Topic"
+    # value columns = the numeric / counts columns we actually care about
+    value_cols = [
+        c for c in cleaned.columns
+        if c not in ("Topic", "Characteristic", "Topic_norm", "Notes", "Note", "Symbol", "Flags", "Flag")
+    ]
+    topic_col = "Topic_norm" if "Topic_norm" in cleaned.columns else "Topic"
 
-    for topic, sub in df.groupby(topic_col, dropna=False):
+    # group by topic, same as UI
+    for topic, sub in cleaned.groupby(topic_col, dropna=False):
+        if sub.empty:
+            continue
+
         parts.append(f"<h2>{topic}</h2>")
         tmp = sub[["Characteristic"] + value_cols].reset_index(drop=True)
         parts.append(tmp.to_html(index=False, escape=False))
 
     parts.append("</body></html>")
     return "\n".join(parts)
+
 
 def _coerce_number(val):
     """
@@ -213,6 +262,16 @@ def _coerce_number(val):
         return num
     except ValueError:
         return None
+
+def row_has_nonzero_data(row: pd.Series, value_cols: list[str]) -> bool:
+    """Return True if at least one of the given columns has a number > 0."""
+    for c in value_cols:
+        if c not in row:
+            continue
+        num = _coerce_number(row[c])
+        if num is not None and num > 0:
+            return True
+    return False
 
 def pick_geo_col(df: pd.DataFrame) -> str | None:
     """
