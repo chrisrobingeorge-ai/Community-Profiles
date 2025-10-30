@@ -315,18 +315,32 @@ def build_printable_html(df: pd.DataFrame) -> str:
 
 
 def pick_geo_col(df: pd.DataFrame) -> str | None:
-    exclude = {"Topic", "Characteristic", "Notes", "Note", "Symbol", "Flags", "Flag"}
+    """
+    Try to guess which column in df is the actual geography data column.
+    Prefer 'Combined' if present (multi-file rollup), else fall back to
+    the most numeric-looking column.
+    """
+    # --- NEW: prefer the rollup if present ---
+    if "Combined" in df.columns:
+        return "Combined"
+
+    # --- original logic ---
+    exclude = {"Topic", "Characteristic", "Notes", "Note", "Symbol", "Flags", "Flag", "Topic_norm"}
     candidates = [c for c in df.columns if c not in exclude]
-    best_col, best_numeric_score = None, -1
+
+    best_col = None
+    best_numeric_score = -1
+
     for col in candidates:
         numeric_score = 0
-        for val in df[col].head(50):
+        for val in df[col].head(50):  # sample first 50 rows to judge
             num = _coerce_number(val)
             if num is not None:
                 numeric_score += 1
         if numeric_score > best_numeric_score:
             best_numeric_score = numeric_score
             best_col = col
+
     return best_col
 
 
@@ -1266,18 +1280,43 @@ def merge_cleaned_profiles(named_cleaned: list[tuple[str, pd.DataFrame]]) -> tup
     )
 
     # Create a Combined column (numeric sum across included labels)
-    def _to_num(s):
-        return pd.to_numeric(s.astype(str).str.replace("%", "").str.replace(",", ""), errors="coerce")
 
-    value_cols = labels[:]  # columns to sum
-    merged["Combined"] = _to_num(merged[value_cols]).sum(axis=1, skipna=True)
+    def _to_num(obj: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+        """
+        Convert %, comma-formatted strings to numeric.
+        Works for both Series and DataFrames.
+        """
+        if isinstance(obj, pd.Series):
+            return pd.to_numeric(
+                obj.astype(str).str.replace(r"[,%]", "", regex=True),
+                errors="coerce"
+            )
+        # DataFrame path
+        return obj.apply(
+            lambda col: pd.to_numeric(
+                col.astype(str).str.replace(r"[,%]", "", regex=True),
+                errors="coerce"
+            )
+        )
+
+    # columns to sum (only those that actually survived the merge)
+    value_cols = [c for c in labels if c in merged.columns]
+    if value_cols:
+        merged["Combined"] = _to_num(merged[value_cols]).sum(axis=1, skipna=True)
+    else:
+        merged["Combined"] = pd.NA
 
     # Reuse your sort logic within topics
     merged["__char_sort_key__"] = merged["Characteristic"].apply(_characteristic_sort_key)
-    merged = merged.sort_values(by=["Topic_norm", "__char_sort_key__"], kind="mergesort").drop(columns="__char_sort_key__").reset_index(drop=True)
+    merged = (
+        merged.sort_values(by=["Topic_norm", "__char_sort_key__"], kind="mergesort")
+              .drop(columns="__char_sort_key__")
+              .reset_index(drop=True)
+    )
 
     # For downstream functions that look for a numeric "best" column, Combined will win.
     return merged, "Combined", value_cols
+
 
 # ------------------------------------------------
 # UI (multi-CSV regional rollup supported)
