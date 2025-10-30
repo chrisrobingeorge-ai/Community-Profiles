@@ -1270,30 +1270,29 @@ else:
             mime="application/pdf",
         )
 
-        # --- Deeper analysis prompt for ChatGPT ---
-    st.subheader("Deeper analysis (copy-ready prompt)")
+    # --- Deeper analysis prompt for ChatGPT ---
+    with st.expander("Deeper analysis (copy-ready prompt)", expanded=False):
+        # Requires build_chatgpt_prompt(...) helper defined above the UI section.
+        prompt_copy, prompt_full = build_chatgpt_prompt(
+            summary_text=summary_text or "",
+            cleaned_df=cleaned_df,
+            place_name=place_guess,
+            as_of_date=(as_of if use_age_adjust else None),
+        )
 
-    # Requires the helper build_chatgpt_prompt(...) defined above the UI section.
-    prompt_copy, prompt_full = build_chatgpt_prompt(
-        summary_text=summary_text or "",
-        cleaned_df=cleaned_df,
-        place_name=place_guess,
-        as_of_date=(as_of if use_age_adjust else None),
-    )
+        st.caption(
+            "Copy this prompt into ChatGPT to get a deeper analysis and program impact assessment "
+            "tailored to Growing Up Strong."
+        )
+        st.code(prompt_copy, language="markdown")
 
-    st.caption(
-        "Copy this prompt into ChatGPT to get a deeper analysis and program impact assessment "
-        "tailored to Growing Up Strong."
-    )
-    st.code(prompt_copy, language="markdown")
-
-    st.download_button(
-        label="⬇️ Download full prompt (TXT with complete table)",
-        data=prompt_full.encode("utf-8"),
-        file_name=f"{(place_guess or 'community')}_deep_analysis_prompt.txt",
-        mime="text/plain",
-        help="Use this if the table is long; the code block above shows a trimmed version for quick copy/paste."
-    )
+        st.download_button(
+            label="⬇️ Download full prompt (TXT with complete table)",
+            data=prompt_full.encode("utf-8"),
+            file_name=f"{(place_guess or 'community')}_deep_analysis_prompt.txt",
+            mime="text/plain",
+            help="Use this if the table is long; the code block above shows a trimmed version for quick copy/paste."
+        )
 
     st.subheader("Filtered Report")
     render_report(cleaned_df)
