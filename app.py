@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__ import annotations  # first line
 
 import io, os, re
 from datetime import date, datetime
@@ -7,10 +7,12 @@ from collections import OrderedDict
 import pandas as pd
 import streamlit as st  # <-- must be above st.set_page_config
 
-from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT   # 👈 add this line
 from reportlab.lib import colors
+
 
 # ------------------------------------------------
 # Streamlit page config
