@@ -699,153 +699,144 @@ def _safe_pct(x):
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_name: str | None = None) -> str:
     if df.empty:
         return "No summary available."
+
     geo_col = pick_geo_col(df)
     if not geo_col:
         return "No summary available."
-    community_label = place_name if place_name else "this community"
 
+    community_label = place_name or "this community"
+    pop_val_num = _get_population(df, geo_col)
+
+    # Age bands and basic counts
+    kids_pct, kids_cnt, seniors_pct, teens_cnt = _get_age_markers(df, geo_col, pop_val_num, as_of_date)
+    hh_size = _best_numeric_from(df, "Household and dwelling characteristics", "Average household size", geo_col)
+    single_parent_ratio = _best_numeric_from(df, "Household.*", "single-parent|one-parent", geo_col, min_pct=1.0)
+
+    # Income and renters
+    lim_at_rate = _best_numeric_from(df, "Low income.*", None, geo_col, min_pct=1.0)
+    if lim_at_rate and lim_at_rate > 100:
+        lim_at_rate = 100.0
+    renters_pct = _best_numeric_from(df, "Household.*", "rented", geo_col, min_pct=1.0)
+
+    # Language and newcomer patterns
+    sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num) or {}
+    top_langs = _top_n(sig_langs_all, 2)
+    largest_non_official_language = top_langs[0] if top_langs else None
+    largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0) if largest_non_official_language else 0.0
+    newcomer_percent = sum([v for k, v in sig_langs_all.items() if v >= 1.0])
+
+    # Indigenous
+    nations_tbl = build_indigenous_table(df, geo_col, pop_val_num)
+    indigenous_percent = 0.0
+    if nations_tbl is not None and not nations_tbl.empty:
+        for row in nations_tbl.to_dict("records"):
+            p = str(row.get("Percent", "")).replace("%", "")
+            try: indigenous_percent += float(p)
+            except: continue
+
+    # Commute
+    commute_rows = df[df["Topic"].str.contains("Commuting", case=False, na=False)]
+    long_commute = False
+    for _, row in commute_rows.iterrows():
+        if "60 minutes" in row["Characteristic"].lower():
+            val = _coerce_number(row[geo_col])
+            if val and val > 5:
+                long_commute = True
+                break
+
+    summary_parts = []
+
+    # Youth
+    if kids_pct and kids_pct > 20:
+        summary_parts.append("Youth density is strong. Programs should run weekly at predictable times and places—avoid one-offs.")
+    elif kids_pct:
+        summary_parts.append("Some younger children are present—consistent visibility helps build familiarity and trust.")
+
+    # Household structure
+    if hh_size and hh_size >= 3.5:
+        summary_parts.append("Households are large. Expect strollers, cousins, siblings arriving together.")
+    if single_parent_ratio and single_parent_ratio >= 5:
+        summary_parts.append("Many single caregivers. No assumptions about supervision—convenience is key.")
+
+    # Income
+    if lim_at_rate and lim_at_rate >= 20:
+        summary_parts.append(f"Low-income share is high (≈{lim_at_rate:.1f}%). Cost-free programming and gear access are essential.")
+    elif lim_at_rate and lim_at_rate >= 10:
+        summary_parts.append(f"Some income pressure detected (≈{lim_at_rate:.1f}%). Consider tiered pricing or donation-supported models.")
+
+    # Language
+    if largest_non_official_language and largest_non_official_language_percent >= 5:
+        summary_parts.append(f"Families speak languages beyond English, notably {largest_non_official_language} (≈{largest_non_official_language_percent:.1f}%). Translate outreach where possible.")
+    elif top_langs:
+        summary_parts.append("Linguistic diversity exists. Home languages matter for trust—check with schools about parent communications.")
+
+    # Indigenous
+    if indigenous_percent >= 10:
+        summary_parts.append(f"Indigenous identity is significant (≈{indigenous_percent:.1f}%). Powwow-based programming and Indigenous co-leadership are important.")
+    elif indigenous_percent >= 3:
+        summary_parts.append(f"Indigenous presence is modest (≈{indigenous_percent:.1f}%) but meaningful—co-delivery recommended.")
+    else:
+        summary_parts.append("Even with limited Indigenous data, culturally respectful practices remain vital.")
+
+    # Commute & geography
+    if long_commute:
+        summary_parts.append("Long commute times suggest programs should be delivered in-neighbourhood, ideally after school.")
+
+    # Rural
+    if pop_val_num and pop_val_num < 10000:
+        summary_parts.append("This is a small rural community. Hub-and-spoke or satellite delivery is recommended.")
+
+    # EDIA
+    equity_index = sum([
+        (indigenous_percent or 0.0),
+        (lim_at_rate or 0.0),
+        (renters_pct or 0.0),
+        (newcomer_percent or 0.0)
+    ])
+    if equity_index >= 60:
+        summary_parts.append("Multiple equity flags suggest eligibility for EDIA-focused outreach grants and tailored program supports.")
+
+    return " ".join(summary_parts)
+
+# Helper used inside this version:
+def _get_population(df, geo_col):
     pop_rows = df[
         (df["Topic"].str.contains("Population and dwellings", case=False, na=False)) &
         (df["Characteristic"].str.contains("Population, 2021", case=False, na=False))
     ]
-    pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
+    return _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
 
-    kids_band_labels = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
-    teens_band_labels = ["15 to 19 years"]
-    seniors_band_labels = ["65 to 69 years","70 to 74 years","75 to 79 years","80 to 84 years","85 years and over"]
-
-    if as_of_date is not None:
-        bands_2021 = extract_age_bands(df, geo_col)
-        adj = age_bands_adjust_to_date(bands_2021, as_of=as_of_date)
-        kids_val = sum_bands(adj, kids_band_labels)
-        teens_val = sum_bands(adj, teens_band_labels)
-        seniors_val = sum_bands(adj, seniors_band_labels)
+def _get_age_markers(df, geo_col, pop_val, as_of_date):
+    labels_kids = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
+    labels_teens = ["15 to 19 years"]
+    labels_seniors = ["65 to 69 years", "70 to 74 years", "75 to 79 years", "80 to 84 years", "85 years and over"]
+    if as_of_date:
+        bands = extract_age_bands(df, geo_col)
+        adj = age_bands_adjust_to_date(bands, as_of=as_of_date)
+        kids = sum_bands(adj, labels_kids)
+        teens = sum_bands(adj, labels_teens)
+        seniors = sum_bands(adj, labels_seniors)
     else:
-        def grab_sum_for(labels):
-            total = 0.0
-            for lab in labels:
-                sub = df[
-                    (df["Topic"].str.contains("Age characteristics", case=False, na=False)) &
-                    (df["Characteristic"].str.contains(lab, case=False, na=False))
-                ]
-                if not sub.empty:
-                    v = _coerce_number(sub.iloc[0][geo_col])
-                    if v:
-                        total += v
-            return total
-        kids_val = grab_sum_for(kids_band_labels)
-        teens_val = grab_sum_for(teens_band_labels)
-        seniors_val = grab_sum_for(seniors_band_labels)
+        kids = _grab_sum_for(df, geo_col, labels_kids)
+        teens = _grab_sum_for(df, geo_col, labels_teens)
+        seniors = _grab_sum_for(df, geo_col, labels_seniors)
+    kids_pct, kids_cnt = _percent_or_none(kids, pop_val)
+    seniors_pct, _ = _percent_or_none(seniors, pop_val)
+    _, teens_cnt = _percent_or_none(teens, pop_val)
+    return kids_pct, kids_cnt, seniors_pct, teens_cnt
 
-    kids_pct, kids_cnt = _percent_or_none(kids_val, pop_val_num)
-    teens_pct, teens_cnt = _percent_or_none(teens_val, pop_val_num)
-    seniors_pct, seniors_cnt = _percent_or_none(seniors_val, pop_val_num)
-
-    low_income_val = _best_numeric_from(
-        df, topic_regex="Low income and income inequality", char_regex=None,
-        geo_col=geo_col, min_pct=1.0,
-    )
-    if low_income_val and low_income_val > 100:
-        low_income_val = 100.0
-
-    renters_share = _best_numeric_from(
-        df, topic_regex="Household and dwelling characteristics|Household type",
-        char_regex="rented", geo_col=geo_col, min_pct=1.0,
-    )
-    hh_size = _best_numeric_from(
-        df, topic_regex="Household and dwelling characteristics",
-        char_regex="Average household size", geo_col=geo_col,
-    )
-    single_parent_share = _best_numeric_from(
-        df, topic_regex="Household type|Household and dwelling characteristics",
-        char_regex="one-parent|single-parent", geo_col=geo_col, min_pct=1.0,
-    )
-
-    sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num)
-    if not isinstance(sig_langs_all, dict):
-        sig_langs_all = {}
-
-    top_langs = _top_n(sig_langs_all, 2)
-    num_non_official_languages = len(sig_langs_all)
-    largest_non_official_language = top_langs[0] if top_langs else None
-    largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0) if largest_non_official_language else 0.0
-
-    nations_tbl = build_indigenous_table(df, geo_col, pop_val_num)
-    indigenous_percent = 0.0
-    nation_list_for_text = []
-    if nations_tbl is not None and not nations_tbl.empty:
-        top_nations_rows = nations_tbl.head(3).to_dict("records")
-        for row in top_nations_rows:
-            g = str(row.get("Group", "")).strip()
-            p = str(row.get("Percent", "")).strip() if row.get("Percent", None) else ""
-            if p:
-                try:
-                    indigenous_percent += float(p.replace("%", ""))
-                except: pass
-            nation_list_for_text.append(f"{g} ({p})" if p else g)
-
-    newcomer_percent = sum([v for k, v in sig_langs_all.items() if v >= 1.0])
-
-    summary = []
-
-    if indigenous_percent >= 10:
-        summary.append(
-            f"Indigenous identity is significant (≈{indigenous_percent:.1f}%). This makes powwow-based programming and Indigenous co-leadership highly relevant."
-        )
-    elif 3 <= indigenous_percent < 10:
-        summary.append(
-            f"Indigenous presence is modest (≈{indigenous_percent:.1f}%), but still important for culturally grounded inclusion."
-        )
-    else:
-        summary.append("Even with limited Indigenous data, culturally respectful practices remain vital.")
-
-    if num_non_official_languages >= 2 and largest_non_official_language_percent >= 5:
-        summary.append(
-            f"Families speak multiple languages including {largest_non_official_language} (≈{largest_non_official_language_percent:.1f}%). Consent forms and flyers should be translated."
-        )
-    elif num_non_official_languages >= 1:
-        summary.append(
-            "Some linguistic diversity exists. Consider lightweight multilingual supports or translated invites."
-        )
-    else:
-        summary.append("English may dominate, but caregiver trust often follows home language. Confirm school-language use with partners.")
-
-    if low_income_val and low_income_val >= 20:
-        summary.append(
-            f"Low-income share is high (≈{low_income_val:.1f}%). Cost-free programming and gear access are essential."
-        )
-    elif low_income_val and 10 <= low_income_val < 20:
-        summary.append(
-            f"Some income pressure detected (≈{low_income_val:.1f}%). Consider tiered pricing or donation-supported models."
-        )
-    else:
-        summary.append("Cost should never be assumed as a non-factor. Even modest fees can block access.")
-
-    if pop_val_num and pop_val_num < 10000:
-        summary.append("This is a small rural community. Hub-based delivery with localized implementation is ideal.")
-
-    if kids_pct and kids_pct >= 25:
-        summary.append(f"A large share of the population ({kids_pct:.1f}%) are children under 15. Weekly structured delivery is appropriate.")
-    elif kids_pct:
-        summary.append(f"There are still children in the 0–14 age range ({kids_pct:.1f}%). Drop-in or flexible recurring sessions may suit best.")
-    else:
-        summary.append("Youth are present in small numbers. Maintaining consistent visibility still builds awareness and trust.")
-
-    total_equity_weight = (
-        (indigenous_percent or 0.0)
-        + (low_income_val or 0.0)
-        + (renters_share or 0.0)
-        + (newcomer_percent or 0.0)
-    )
-    if total_equity_weight >= 60:
-        summary.append("Multiple equity flags suggest eligibility for EDIA-focused outreach grants and tailored program supports.")
-    elif total_equity_weight >= 40:
-        summary.append("Several overlapping indicators (e.g. income, language, renting) show this community may benefit from inclusion-focused adaptations.")
-    else:
-        summary.append("While formal equity markers are limited, universal design and inclusive language remain good practice.")
-
-    return "\n".join(summary)
-
+def _grab_sum_for(df, geo_col, labels):
+    total = 0.0
+    for lab in labels:
+        sub = df[
+            (df["Topic"].str.contains("Age characteristics", case=False, na=False)) &
+            (df["Characteristic"].str.contains(lab, case=False, na=False))
+        ]
+        if not sub.empty:
+            v = _coerce_number(sub.iloc[0][geo_col])
+            if v:
+                total += v
+    return total
     
 def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
