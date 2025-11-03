@@ -744,7 +744,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     seniors_pct, seniors_cnt = _percent_or_none(seniors_val, pop_val_num)
 
     # Pull key equity markers
-    if low_income_val and low_income_val > 100:
+if low_income_val and low_income_val > 100:
     low_income_val = 100.0
     low_income_val = _best_numeric_from(
         df, topic_regex="Low income and income inequality", char_regex=None,
