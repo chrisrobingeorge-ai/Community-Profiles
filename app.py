@@ -765,7 +765,11 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     top_langs = _top_n(sig_langs_all, 2)
     num_non_official_languages = len(sig_langs_all)
     largest_non_official_language = top_langs[0] if top_langs else None
-    largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0)
+    
+    if largest_non_official_language:
+        largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0)
+    else:
+        largest_non_official_language_percent = 0.0
 
     nations_tbl = build_indigenous_table(df, geo_col, pop_val_num)
     indigenous_percent = 0.0
