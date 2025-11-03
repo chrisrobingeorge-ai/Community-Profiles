@@ -696,7 +696,6 @@ def _safe_pct(x):
         return f"{x:.1f}%"
     except Exception:
         return None
-
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_name: str | None = None) -> str:
     if df.empty:
         return "No summary available."
@@ -711,7 +710,6 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     ]
     pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
 
-    # Get demographic markers
     kids_band_labels = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
     teens_band_labels = ["15 to 19 years"]
     seniors_band_labels = ["65 to 69 years","70 to 74 years","75 to 79 years","80 to 84 years","85 years and over"]
@@ -743,13 +741,13 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     teens_pct, teens_cnt = _percent_or_none(teens_val, pop_val_num)
     seniors_pct, seniors_cnt = _percent_or_none(seniors_val, pop_val_num)
 
-    # Pull key equity markers
-if low_income_val and low_income_val > 100:
-    low_income_val = 100.0
     low_income_val = _best_numeric_from(
         df, topic_regex="Low income and income inequality", char_regex=None,
         geo_col=geo_col, min_pct=1.0,
     )
+    if low_income_val and low_income_val > 100:
+        low_income_val = 100.0
+
     renters_share = _best_numeric_from(
         df, topic_regex="Household and dwelling characteristics|Household type",
         char_regex="rented", geo_col=geo_col, min_pct=1.0,
@@ -766,15 +764,11 @@ if low_income_val and low_income_val > 100:
     sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num)
     if not isinstance(sig_langs_all, dict):
         sig_langs_all = {}
-    
+
     top_langs = _top_n(sig_langs_all, 2)
     num_non_official_languages = len(sig_langs_all)
     largest_non_official_language = top_langs[0] if top_langs else None
-    
-    if largest_non_official_language:
-        largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0)
-    else:
-        largest_non_official_language_percent = 0.0
+    largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0) if largest_non_official_language else 0.0
 
     nations_tbl = build_indigenous_table(df, geo_col, pop_val_num)
     indigenous_percent = 0.0
@@ -790,7 +784,8 @@ if low_income_val and low_income_val > 100:
                 except: pass
             nation_list_for_text.append(f"{g} ({p})" if p else g)
 
-    # === ENHANCED INSIGHT BLOCK ===
+    newcomer_percent = sum([v for k, v in sig_langs_all.items() if v >= 1.0])
+
     summary = []
 
     if indigenous_percent >= 10:
@@ -801,15 +796,19 @@ if low_income_val and low_income_val > 100:
         summary.append(
             f"Indigenous presence is modest (≈{indigenous_percent:.1f}%), but still important for culturally grounded inclusion."
         )
+    else:
+        summary.append("Even with limited Indigenous data, culturally respectful practices remain vital.")
 
     if num_non_official_languages >= 2 and largest_non_official_language_percent >= 5:
         summary.append(
             f"Families speak multiple languages including {largest_non_official_language} (≈{largest_non_official_language_percent:.1f}%). Consent forms and flyers should be translated."
         )
-    elif 1 < num_non_official_languages < 2:
+    elif num_non_official_languages >= 1:
         summary.append(
-            f"Some linguistic diversity exists. Consider lightweight multilingual supports."
+            "Some linguistic diversity exists. Consider lightweight multilingual supports or translated invites."
         )
+    else:
+        summary.append("English may dominate, but caregiver trust often follows home language. Confirm school-language use with partners.")
 
     if low_income_val and low_income_val >= 20:
         summary.append(
@@ -819,24 +818,35 @@ if low_income_val and low_income_val > 100:
         summary.append(
             f"Some income pressure detected (≈{low_income_val:.1f}%). Consider tiered pricing or donation-supported models."
         )
+    else:
+        summary.append("Cost should never be assumed as a non-factor. Even modest fees can block access.")
 
     if pop_val_num and pop_val_num < 10000:
         summary.append("This is a small rural community. Hub-based delivery with localized implementation is ideal.")
 
     if kids_pct and kids_pct >= 25:
         summary.append(f"A large share of the population ({kids_pct:.1f}%) are children under 15. Weekly structured delivery is appropriate.")
+    elif kids_pct:
+        summary.append(f"There are still children in the 0–14 age range ({kids_pct:.1f}%). Drop-in or flexible recurring sessions may suit best.")
+    else:
+        summary.append("Youth are present in small numbers. Maintaining consistent visibility still builds awareness and trust.")
 
-    newcomer_percent = sum([v for k, v in sig_langs_all.items() if v >= 1.0])
-    if (
+    total_equity_weight = (
         (indigenous_percent or 0.0)
         + (low_income_val or 0.0)
         + (renters_share or 0.0)
         + (newcomer_percent or 0.0)
-    ) >= 60:
-
+    )
+    if total_equity_weight >= 60:
         summary.append("Multiple equity flags suggest eligibility for EDIA-focused outreach grants and tailored program supports.")
+    elif total_equity_weight >= 40:
+        summary.append("Several overlapping indicators (e.g. income, language, renting) show this community may benefit from inclusion-focused adaptations.")
+    else:
+        summary.append("While formal equity markers are limited, universal design and inclusive language remain good practice.")
 
     return "\n".join(summary)
+
+    
 def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
