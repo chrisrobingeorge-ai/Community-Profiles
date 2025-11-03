@@ -761,7 +761,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
         char_regex="one-parent|single-parent", geo_col=geo_col, min_pct=1.0,
     )
 
-    sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num)
+    sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num) or {}
     top_langs = _top_n(sig_langs_all, 2)
     num_non_official_languages = len(sig_langs_all)
     largest_non_official_language = top_langs[0] if top_langs else None
