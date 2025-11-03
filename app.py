@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io, os, re
 from datetime import date, datetime
 from collections import OrderedDict
@@ -1035,13 +1037,6 @@ def collapse_duplicate_characteristics(df: pd.DataFrame) -> pd.DataFrame:
         keep_rows.append(idx)
     out = df.loc[keep_rows].copy().reset_index(drop=True)
     return out
-
-
-from reportlab.lib.pagesizes import LETTER, landscape  # add landscape import at top with others
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_RIGHT, TA_LEFT
-from reportlab.platypus import Paragraph, Table, TableStyle, SimpleDocTemplate, Spacer, PageBreak
-from reportlab.lib import colors
 
 def _calc_col_widths(avail_w: float, n_values: int) -> list[float]:
     """
