@@ -696,6 +696,7 @@ def _safe_pct(x):
         return f"{x:.1f}%"
     except Exception:
         return None
+        
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_name: str | None = None) -> str:
     if df.empty:
         return "No summary available."
@@ -719,7 +720,9 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     renters_pct = _best_numeric_from(df, "Household.*", "rented", geo_col, min_pct=1.0)
 
     # Language and newcomer patterns
-    sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num) or {}
+    sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num)
+    if not isinstance(sig_langs_all, dict):
+        sig_langs_all = {}
     top_langs = _top_n(sig_langs_all, 2)
     largest_non_official_language = top_langs[0] if top_langs else None
     largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0) if largest_non_official_language else 0.0
@@ -797,6 +800,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
         summary_parts.append("Multiple equity flags suggest eligibility for EDIA-focused outreach grants and tailored program supports.")
 
     return " ".join(summary_parts)
+
 
 # Helper used inside this version:
 def _get_population(df, geo_col):
