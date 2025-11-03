@@ -825,7 +825,13 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
         summary.append(f"A large share of the population ({kids_pct:.1f}%) are children under 15. Weekly structured delivery is appropriate.")
 
     newcomer_percent = sum([v for k, v in sig_langs_all.items() if v >= 1.0])
-    if (indigenous_percent + low_income_val + renters_share + newcomer_percent) >= 60:
+    if (
+        (indigenous_percent or 0.0)
+        + (low_income_val or 0.0)
+        + (renters_share or 0.0)
+        + (newcomer_percent or 0.0)
+    ) >= 60:
+
         summary.append("Multiple equity flags suggest eligibility for EDIA-focused outreach grants and tailored program supports.")
 
     return "\n".join(summary)
