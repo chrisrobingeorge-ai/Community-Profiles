@@ -1522,10 +1522,7 @@ def call_llm(prompt: str) -> str:
     return resp.choices[0].message["content"].strip()
 
 
-from functools import reduce
-
-def load_and_clean(uploaded_file) -> pd.DataFrame:
-from functools import reduce
+from functools import reduce  # 👈 top-level import (no indent)
 
 def load_and_clean(uploaded_file) -> pd.DataFrame:
     """Load one CSV and run your existing cleaning pipeline."""
@@ -1534,7 +1531,6 @@ def load_and_clean(uploaded_file) -> pd.DataFrame:
     df = collapse_duplicate_characteristics(df)
     df = prune_columns(df)
     return df
-
 
 def merge_cleaned_profiles(named_cleaned: list[tuple[str, pd.DataFrame]]) -> tuple[pd.DataFrame, str, list[str]]:
     """
