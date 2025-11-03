@@ -6,6 +6,10 @@ from collections import OrderedDict
 
 import pandas as pd
 import streamlit as st  # <-- must be above st.set_page_config
+import openai  # 👈 add this
+
+# Set OpenAI API key from environment (Streamlit Cloud → Secrets, or local env)
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
@@ -1494,6 +1498,33 @@ def build_chatgpt_prompt(
 
     return prompt_copy, prompt_full
 
+# === LLM helper =====================================================
+def call_llm(prompt: str) -> str:
+    """
+    Call the OpenAI chat model to generate a deeper analysis & recommendations.
+    """
+    resp = openai.ChatCompletion.create(
+        model="gpt-4o-mini",  # adjust if you're using a different model
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a community program designer and evaluator working in Alberta. "
+                    "You understand community development, EDIA, Indigenous partnership, rural/urban dynamics, "
+                    "and post-COVID community arts programming."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.4,
+        max_tokens=1500,
+    )
+    return resp.choices[0].message["content"].strip()
+
+
+from functools import reduce
+
+def load_and_clean(uploaded_file) -> pd.DataFrame:
 from functools import reduce
 
 def load_and_clean(uploaded_file) -> pd.DataFrame:
@@ -1652,17 +1683,28 @@ else:
             mime="application/pdf",
         )
 
-    # ---- ChatGPT prompt (expander; uses your existing helper) ----
-    with st.expander("Deeper analysis (copy-ready prompt)", expanded=False):
+    # ---- Deeper analysis: in-app AI + copyable prompt ----
+    with st.expander("Deeper analysis (AI-generated + copy-ready prompt)", expanded=False):
         prompt_copy, prompt_full = build_chatgpt_prompt(
             summary_text=summary_text or "",
             cleaned_df=cleaned_df,
             place_name=place_guess,
             as_of_date=(as_of if use_age_adjust else None),
         )
+
         st.caption(
-            "Copy this prompt into ChatGPT to get a deeper analysis and program impact assessment tailored to Growing Up Strong."
+            "You can either let the app generate an AI-based analysis, or copy the prompt to use elsewhere."
         )
+
+        # In-app AI analysis
+        if st.button("✨ Generate AI analysis in-app", key="btn_ai_analysis"):
+            with st.spinner("Generating analysis..."):
+                analysis_text = call_llm(prompt_full)
+            st.markdown("#### AI-generated analysis")
+            st.markdown(analysis_text)
+
+        st.markdown("---")
+        st.markdown("#### Copy-ready prompt")
         st.code(prompt_copy, language="markdown")
         st.download_button(
             label="⬇️ Download full prompt (TXT with complete table)",
