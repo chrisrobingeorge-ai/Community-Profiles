@@ -696,7 +696,7 @@ def _safe_pct(x):
         return f"{x:.1f}%"
     except Exception:
         return None
-        
+
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_name: str | None = None) -> str:
     if df.empty:
         return "No summary available."
@@ -872,7 +872,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
                     pass
             nation_list_for_text.append(f"{g} ({p})" if p else g)
 
-    # --- Seat sizing helper (same as your earlier version) ---
+    # --- Seat sizing helper (same as earlier version) ---
     def seat_range(count_val):
         if not count_val or count_val <= 0:
             return (None, None)
@@ -887,6 +887,20 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     teen_target = None
     if teen_low and teen_hi:
         teen_target = max(12, int(round((teen_low + teen_hi) / 2.0)))
+
+    # ------------------------------------------------------------------
+    # EVIDENCE-INFORMED CONTEXT (from community-development / arts literature)
+    # ------------------------------------------------------------------
+    literature_block = (
+        "Community development, arts-in-the-community, and inclusion research in Alberta and across Canada "
+        "emphasizes relationship-based, place-based programming that is co-designed with local partners "
+        "(schools, FCSS, settlement agencies, Indigenous organizations, municipalities) rather than dropped in as one-off events. "
+        "Best practice is to remove structural barriers (cost, transport, registration complexity, required gear, and language), "
+        "centre cultural safety for Indigenous, newcomer, racialized and low-income families, and focus on belonging, mental health, "
+        "and family connection as core outcomes of participation—especially in the post-COVID period. Rural and smaller centres are "
+        "typically served best through hub-and-spoke models that share instructors across communities and make use of trusted spaces "
+        "such as schools, community halls, and friendship centres."
+    )
 
     # ------------------------------------------------------------------
     # SNAPSHOT & SCALE
@@ -1112,6 +1126,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     # ------------------------------------------------------------------
     final_sections = [
         f"COMMUNITY PROFILE SUMMARY — {community_label.upper()}",
+        "EVIDENCE-INFORMED PRACTICE CONTEXT (ALBERTA COMMUNITY DEVELOPMENT & ARTS ACCESS): " + literature_block,
         "SNAPSHOT & SCALE: " + snapshot_block,
     ]
     if child_bands_block:
@@ -1126,7 +1141,6 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     ]
 
     return "\n\n".join(final_sections)
-
 
 # Helper used inside this version:
 def _get_population(df, geo_col):
