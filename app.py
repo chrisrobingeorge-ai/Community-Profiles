@@ -697,7 +697,6 @@ def _safe_pct(x):
     except Exception:
         return None
 
-
 def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_name: str | None = None) -> str:
     if df.empty:
         return "No summary available."
@@ -712,6 +711,7 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     ]
     pop_val_num = _coerce_number(pop_rows.iloc[0][geo_col]) if not pop_rows.empty else None
 
+    # Get demographic markers
     kids_band_labels = ["0 to 4 years", "5 to 9 years", "10 to 14 years"]
     teens_band_labels = ["15 to 19 years"]
     seniors_band_labels = ["65 to 69 years","70 to 74 years","75 to 79 years","80 to 84 years","85 years and over"]
@@ -742,246 +742,86 @@ def generate_summary(df: pd.DataFrame, as_of_date: date | None = None, place_nam
     kids_pct, kids_cnt = _percent_or_none(kids_val, pop_val_num)
     teens_pct, teens_cnt = _percent_or_none(teens_val, pop_val_num)
     seniors_pct, seniors_cnt = _percent_or_none(seniors_val, pop_val_num)
-    # --- Children by detailed age bands (raw 2021 AND optionally age-adjusted) ---
-    bands_raw = get_childteen_bands(df, geo_col, as_of_date=None)
-    bands_adj = get_childteen_bands(df, geo_col, as_of_date=as_of_date) if as_of_date is not None else None
-    
-    def _fmt_count(x):
-        try:
-            return f"{int(round(float(x))):,}"
-        except Exception:
-            return "0"
-    
-    parts = []
-    for lab, short in [
-        ("0 to 4 years", "0–4"),
-        ("5 to 9 years", "5–9"),
-        ("10 to 14 years", "10–14"),
-        ("15 to 19 years", "15–19"),
-    ]:
-        raw_v = bands_raw.get(lab, 0.0) if bands_raw else 0.0
-        segment = f"{short}: ~{_fmt_count(raw_v)}"
-        if bands_adj is not None:
-            adj_v = bands_adj.get(lab, 0.0)
-            segment += f" (aged: ~{_fmt_count(adj_v)})"
-        parts.append(segment)
-    
-    child_bands_block = " ; ".join(parts) if any(
-        (bands_raw.get(k, 0.0) or 0.0) > 0 for k in (
-            "0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years"
-        )
-    ) else None
 
-
-    single_parent_share = _best_numeric_from(
-        df, topic_regex="Household type|Household and dwelling characteristics",
-        char_regex="one-parent|single-parent", geo_col=geo_col, min_pct=1.0,
-    )
-    hh_size = _best_numeric_from(
-        df, topic_regex="Household and dwelling characteristics",
-        char_regex="Average household size", geo_col=geo_col,
+    # Pull key equity markers
+    low_income_val = _best_numeric_from(
+        df, topic_regex="Low income and income inequality", char_regex=None,
+        geo_col=geo_col, min_pct=1.0,
     )
     renters_share = _best_numeric_from(
         df, topic_regex="Household and dwelling characteristics|Household type",
         char_regex="rented", geo_col=geo_col, min_pct=1.0,
     )
-    owners_share = _best_numeric_from(
-        df, topic_regex="Household and dwelling characteristics|Household type",
-        char_regex="owned", geo_col=geo_col, min_pct=1.0,
+    hh_size = _best_numeric_from(
+        df, topic_regex="Household and dwelling characteristics",
+        char_regex="Average household size", geo_col=geo_col,
     )
-    low_income_val = _best_numeric_from(
-        df, topic_regex="Low income and income inequality", char_regex=None,
-        geo_col=geo_col, min_pct=1.0,
+    single_parent_share = _best_numeric_from(
+        df, topic_regex="Household type|Household and dwelling characteristics",
+        char_regex="one-parent|single-parent", geo_col=geo_col, min_pct=1.0,
     )
-
-    mobility_rows = df[df["Topic"].str.contains("Mobility status 1 year ago|Mobility status 5 years ago", case=False, na=False)]
-    mobility_flag = False
-    for _, r in mobility_rows.iterrows():
-        mv = _coerce_number(r[geo_col])
-        row_char = str(r["Characteristic"]).lower()
-        if mv and mv > 0 and ("moved" in row_char or "different" in row_char):
-            mobility_flag = True
-            break
-
-    commute_rows = df[df["Topic"].str.contains("Main mode of commuting|Commuting duration", case=False, na=False)]
-    long_commute_flag = False
-    car_commute_flag = False
-    for _, r in commute_rows.iterrows():
-        row_char = str(r["Characteristic"]).lower()
-        v = _coerce_number(r[geo_col])
-        if not v or v <= 0:
-            continue
-        if "60 minutes" in row_char or "longer" in row_char:
-            long_commute_flag = True
-        if ("car" in row_char or "automobile" in row_char or "driver" in row_char):
-            car_commute_flag = True
 
     sig_langs_all = extract_significant_languages(df, geo_col, pop_val_num)
     top_langs = _top_n(sig_langs_all, 2)
+    num_non_official_languages = len(sig_langs_all)
+    largest_non_official_language = top_langs[0] if top_langs else None
+    largest_non_official_language_percent = sig_langs_all.get(largest_non_official_language, 0.0)
 
     nations_tbl = build_indigenous_table(df, geo_col, pop_val_num)
+    indigenous_percent = 0.0
     nation_list_for_text = []
     if nations_tbl is not None and not nations_tbl.empty:
         top_nations_rows = nations_tbl.head(3).to_dict("records")
         for row in top_nations_rows:
             g = str(row.get("Group", "")).strip()
             p = str(row.get("Percent", "")).strip() if row.get("Percent", None) else ""
+            if p:
+                try:
+                    indigenous_percent += float(p.replace("%", ""))
+                except: pass
             nation_list_for_text.append(f"{g} ({p})" if p else g)
 
-    def seat_range(count_val):
-        if not count_val or count_val <= 0:
-            return (None, None)
-        low = int(round(count_val * 0.05))
-        hi  = int(round(count_val * 0.08))
-        low = max(low, 10)
-        hi  = max(hi, low)
-        return (low, hi)
+    # === ENHANCED INSIGHT BLOCK ===
+    summary = []
 
-    kids_low, kids_hi = seat_range(kids_cnt if kids_cnt else 0)
-    teen_low, teen_hi = seat_range(teens_cnt if teens_cnt else 0)
-    teen_target = None
-    if teen_low and teen_hi:
-        teen_target = max(12, int(round((teen_low + teen_hi) / 2.0)))
+    if indigenous_percent >= 10:
+        summary.append(
+            f"Indigenous identity is significant (≈{indigenous_percent:.1f}%). This makes powwow-based programming and Indigenous co-leadership highly relevant."
+        )
+    elif 3 <= indigenous_percent < 10:
+        summary.append(
+            f"Indigenous presence is modest (≈{indigenous_percent:.1f}%), but still important for culturally grounded inclusion."
+        )
 
-    snapshot_lines = [
-        f"{community_label} has an established resident base. "
-        "The points below are meant to guide how we deliver programming here, not just describe statistics."
-    ]
-    snap_bits = []
-    if kids_cnt and kids_cnt > 0:
-        snap_bits.append(f"~{kids_cnt} children 0–14" + (f" ({_safe_pct(kids_pct)})" if kids_pct else ""))
-    if teens_cnt and teens_cnt > 0:
-        snap_bits.append(f"~{teens_cnt} teens 15–19" + (f" ({_safe_pct(teens_pct)})" if teens_pct else ""))
-    if seniors_cnt and seniors_cnt > 0:
-        snap_bits.append(f"~{seniors_cnt} seniors 65+" + (f" ({_safe_pct(seniors_pct)})" if seniors_pct else ""))
-    if snap_bits:
-        snapshot_lines.append("Key age groups: " + "; ".join(snap_bits) + ".")
-    if single_parent_share:
-        snapshot_lines.append(f"Single-caregiver households are present (≈{single_parent_share:.1f}%).")
-    if renters_share or owners_share:
-        parts = []
-        if renters_share: parts.append(f"{renters_share:.1f}% renting")
-        if owners_share:  parts.append(f"{owners_share:.1f}% owning")
-        if parts: snapshot_lines.append("Housing mix: " + " / ".join(parts) + ".")
-    if low_income_val:
-        snapshot_lines.append(f"Low-income pressure shows up in census indicators (≈{low_income_val:.1f}%).")
-    if top_langs:
-        snapshot_lines.append("Families are using languages at home beyond English/French, notably " + ", ".join(top_langs) + ".")
-    if nation_list_for_text:
-        snapshot_lines.append("Indigenous Nations / Peoples present in meaningful numbers include " + ", ".join(nation_list_for_text) + ".")
-    snapshot_block = " ".join(snapshot_lines)
+    if num_non_official_languages >= 2 and largest_non_official_language_percent >= 5:
+        summary.append(
+            f"Families speak multiple languages including {largest_non_official_language} (≈{largest_non_official_language_percent:.1f}%). Consent forms and flyers should be translated."
+        )
+    elif 1 < num_non_official_languages < 2:
+        summary.append(
+            f"Some linguistic diversity exists. Consider lightweight multilingual supports."
+        )
 
-    youth_lines = []
-    if kids_cnt:
-        youth_lines.append(
-            "There are a lot of younger children here, which justifies recurring in-community programming instead of one-off outreach. "
-            "This needs to look like 'every Tuesday/Thursday after school in the same place,' not a special event."
+    if low_income_val and low_income_val >= 20:
+        summary.append(
+            f"Low-income share is high (≈{low_income_val:.1f}%). Cost-free programming and gear access are essential."
         )
-    else:
-        youth_lines.append("There are meaningful numbers of younger children. We should plan for repeating programs, not pop-ins.")
-    if teens_cnt:
-        youth_lines.append(
-            "There is also a visible 15–19 group. This is exactly the age when girls tend to drop out of structured activity. "
-            "For that band, emotional safety and peer belonging have to come first, and 'performance' comes later if at all."
+    elif low_income_val and 10 <= low_income_val < 20:
+        summary.append(
+            f"Some income pressure detected (≈{low_income_val:.1f}%). Consider tiered pricing or donation-supported models."
         )
-    if seniors_cnt:
-        youth_lines.append(
-            "A notable 65+ population is also present. Grandparents are often the drivers, sit-and-wait adults, "
-            "and sometimes the default childcare at pickup."
-        )
-    youth_block = " ".join(youth_lines)
 
-    hh_lines = []
-    if hh_size:
-        hh_lines.append(
-            f"Average household size is about {hh_size:.1f} people. "
-            "Expect siblings/cousins to arrive together; plan for strollers and snacks."
-        )
-    else:
-        hh_lines.append("Households commonly include multiple kids or extended family.")
-    if single_parent_share:
-        hh_lines.append(
-            "Single caregivers handle work, transport, meals, homework, and bedtime without backup. "
-            "One location, predictable timing, and no 'must stay to supervise' assumptions."
-        )
-    if renters_share and (not owners_share or renters_share > owners_share):
-        hh_lines.append(
-            "Renting is common → more moves and less scheduling stability. Build easy re-entry: if a family disappears, they’re welcome back without penalty."
-        )
-    elif owners_share:
-        hh_lines.append("Owner-occupied housing is strong → one consistent site can hold a stable group over multiple months.")
-    if low_income_val:
-        hh_lines.append(
-            "Cost is a barrier. Avoid terms like 'tuition/fee/uniform/recital cost.' Provide shoes/clothing, don’t merely recommend them."
-        )
-    if mobility_flag:
-        hh_lines.append(
-            "Some families are newly arrived or recently moved. Don’t assume parents know where to get help—act as bridge and connector."
-        )
-    hh_block = " ".join(hh_lines)
+    if pop_val_num and pop_val_num < 10000:
+        summary.append("This is a small rural community. Hub-based delivery with localized implementation is ideal.")
 
-    lang_lines = []
-    if top_langs:
-        if len(top_langs) == 1:
-            lang_lines.append(
-                f"Parent communication cannot assume English-only. Provide invites/consent in {top_langs[0]} as well as English."
-            )
-        else:
-            lang_lines.append(
-                "Parent communication cannot assume English-only. Provide invites/consent in " + " and ".join(top_langs) + " as well as English."
-            )
-    else:
-        lang_lines.append("Even if English dominates on paper, trust often sits in the home language. Check what schools use with caregivers.")
-    if nation_list_for_text:
-        lang_lines.append(
-            "Indigenous partnership is not optional. Co-present with local Indigenous leadership; Indigenous adults should be visibly in the room."
-        )
-    lang_block = " ".join(lang_lines)
+    if kids_pct and kids_pct >= 25:
+        summary.append(f"A large share of the population ({kids_pct:.1f}%) are children under 15. Weekly structured delivery is appropriate.")
 
-    ops_lines = []
-    if kids_low and kids_hi:
-        ops_lines.append(
-            f"For younger kids, aim for {kids_low}–{kids_hi} active seats across recurring weekly sessions (manageable with two facilitators)."
-        )
-    else:
-        ops_lines.append("Size kids’ programming to ~5–8% of the local child population, not just a token pilot.")
-    if teen_target:
-        ops_lines.append(
-            f"For teens (especially girls 15–19), build one dedicated block with ~{teen_target} seats. Low performance pressure; zero uniform/gear cost."
-        )
-    if long_commute_flag or car_commute_flag:
-        ops_lines.append(
-            "Deliver in-town at/near a school, right after school or early evening. Another cross-town drive after a 60+ min commute kills attendance."
-        )
-    else:
-        ops_lines.append("After-school / early evening at the closest possible school or hall with predictable days (e.g., Tue/Thu).")
-    ops_lines.append("Room setup: clear sightlines, space for caregivers/siblings, stroller parking, water/snack table, 'you can stay and watch'.")
-    ops_lines.append("Have a gear library on site (loaner shoes/clothes) and explicit 'no fee / no uniform / no recital cost' messaging.")
-    ops_block = " ".join(ops_lines)
+    newcomer_percent = sum([v for k, v in sig_langs_all.items() if v >= 1.0])
+    if (indigenous_percent + low_income_val + renters_share + newcomer_percent) >= 60:
+        summary.append("Multiple equity flags suggest eligibility for EDIA-focused outreach grants and tailored program supports.")
 
-    risk_lines = [
-        "Main risks: cost stigma, commute fatigue, social safety for teen girls, and language disconnect with caregivers.",
-        "Mitigations: zero-dollar entry; in-neighbourhood delivery; teen block focused on belonging; first contact via trusted channels (schools, settlement, FCSS, Indigenous leadership, churches).",
-        "90-day success test: (1) ≥60% of enrolled kids still attending in week 6; (2) teen girls ≥40% of teen block and ≥60% still attending in week 6; (3) ≥75% of caregivers felt welcome/safe and would return.",
-    ]
-    kpi_block = " ".join(risk_lines)
-
-    final_sections = [
-        f"COMMUNITY PROFILE SUMMARY — {community_label.upper()}",
-        "SNAPSHOT & SCALE: " + snapshot_block,
-    ]
-    if child_bands_block:
-        final_sections.append("CHILD POPULATION BY AGE BAND: " + child_bands_block)
-    final_sections += [
-        "YOUTH & CAREGIVERS: " + youth_block,
-        "HOUSEHOLD REALITY & COST: " + hh_block,
-        "LANGUAGE, TRUST & INDIGENOUS PARTNERSHIPS: " + lang_block,
-        "ACCESS / DELIVERY MODEL: " + ops_block,
-        "RISK, MITIGATION & 90-DAY KPIs: " + kpi_block,
-    ]
-    return "\n\n".join(final_sections)
-
-
+    return "\n".join(summary)
 def prune_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
