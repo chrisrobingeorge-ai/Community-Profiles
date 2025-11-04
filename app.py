@@ -6,7 +6,38 @@ from collections import OrderedDict
 
 import pandas as pd
 import streamlit as st  # <-- must be above st.set_page_config
-import openai  # 👈 add this
+import openai
+from openai.error import RateLimitError, OpenAIError
+
+def call_llm(prompt: str) -> str:
+    try:
+        resp = openai.ChatCompletion.create(
+            model="gpt-4o-mini",  # or whatever you're using
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a community program designer and evaluator working in Alberta. "
+                        "You understand community development, EDIA, Indigenous partnership, rural/urban dynamics, "
+                        "and post-COVID community arts programming."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.4,
+            max_tokens=900,  # smaller to reduce load
+        )
+        return resp.choices[0].message["content"].strip()
+
+    except RateLimitError:
+        return (
+            "The AI analysis service is temporarily rate-limited or out of quota on this API key. "
+            "Try again in a bit, or check your OpenAI usage & limits."
+        )
+    except OpenAIError as e:
+        return f"AI call failed: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error calling AI: {str(e)}"
 
 # Set OpenAI API key from environment (Streamlit Cloud → Secrets, or local env)
 openai.api_key = os.environ.get("OPENAI_API_KEY")
